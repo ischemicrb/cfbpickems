@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#500000" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="CFB Pickems" />
+  <meta name="description" content="Private college football pick'em league tracker" />
+  <title>CFB Pickems</title>
+  <!-- Stop browsers from serving a stale HTML shell from disk cache. -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="stylesheet" href="css/styles.css?v=13" />
+</head>
+<body>
+
+<!-- Inline theme bootstrap — runs before the module loads so users on a non-default
+     theme don't see a flash of the Aggie palette. Reads settings.theme directly. -->
+<script>
+  (function () {
+    try {
+      var s = JSON.parse(localStorage.getItem('cfbp_settings') || '{}');
+      var key = (s && s.theme) || 'aggie';
+      document.body.classList.add('theme-' + key);
+    } catch (e) { /* fall back to default styles */ }
+  })();
+</script>
+
+<div class="page-wrapper">
+
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="app-logo">
+        <div class="app-logo-icon">🏈</div>
+        <div class="app-logo-text">CFB <span>Pickems</span></div>
+      </div>
+      <div class="header-right">
+        <span id="sync-badge" class="sync-badge"></span>
+        <div id="tz-toggle" class="tz-toggle"></div>
+        <div id="theme-toggle" class="theme-toggle-slot"></div>
+        <div class="header-meta" id="header-meta"><strong>Loading…</strong></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-content">
+    <!-- Default tab is DASHBOARD (per Phase I requirements UN-27).
+         Other sections are inactive until navigated. -->
+    <section class="page-section" id="page-picks">
+      <div class="loading-state"><div class="spinner"></div><p>Loading…</p></div>
+    </section>
+    <section class="page-section active" id="page-dashboard">
+      <div class="loading-state"><div class="spinner"></div><p>Loading…</p></div>
+    </section>
+    <section class="page-section" id="page-leaderboard">
+      <div class="loading-state"><div class="spinner"></div><p>Loading…</p></div>
+    </section>
+    <section class="page-section" id="page-commissioner">
+      <div class="loading-state"><div class="spinner"></div><p>Loading…</p></div>
+    </section>
+    <section class="page-section" id="page-rules">
+      <div class="loading-state"><div class="spinner"></div><p>Loading…</p></div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button class="nav-item" data-tab="picks">
+      <span class="nav-icon">🏈</span><span>Picks</span>
+    </button>
+    <button class="nav-item active" data-tab="dashboard">
+      <span class="nav-icon">📊</span><span>Dashboard</span>
+    </button>
+    <button class="nav-item" data-tab="leaderboard">
+      <span class="nav-icon">🏆</span><span>Standings</span>
+    </button>
+    <button class="nav-item" data-tab="commissioner">
+      <span class="nav-icon">⚙️</span><span>Comm.</span>
+    </button>
+    <button class="nav-item" data-tab="rules">
+      <span class="nav-icon">📋</span><span>Rules</span>
+    </button>
+  </nav>
+
+</div>
+
+<div id="toast-container"></div>
+
+<!-- Cache-bust the main entry script so a stale browser cache can't serve v9 app.js. -->
+<script type="module" src="js/app.js?v=13"></script>
+<script>
+  // Service worker registration + auto-update.
+  // When a new SW takes over (e.g. v10 replacing v9), force a one-time reload
+  // so the user sees the new code instead of the cached v9 shell.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('service-worker.js?v=13')
+        .then(reg => {
+          console.log('[SW] registered:', reg.scope);
+          // If there's already a waiting worker, tell it to activate now.
+          if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+          // Watch for new installations and tell them to take over.
+          reg.addEventListener('updatefound', () => {
+            const newSW = reg.installing;
+            if (!newSW) return;
+            newSW.addEventListener('statechange', () => {
+              if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+                newSW.postMessage({ type: 'SKIP_WAITING' });
+              }
+            });
+          });
+        })
+        .catch(e => console.warn('[SW] failed', e));
+
+      // When a new SW takes control mid-session, reload exactly once.
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (reloaded) return;
+        reloaded = true;
+        window.location.reload();
+      });
+    });
+  }
+</script>
+</body>
+</html>
