@@ -1752,6 +1752,8 @@ function bindAvailGroupHandlers(week, currentSlate) {
     });
   });
 }
+
+function renderAvailableGamesList(availGames, currentSlate, week) {
   return availGames.map(game => {
     const onSlate = currentSlate.some(g => g.espnEventId&&g.espnEventId===game.espnEventId || (g.homeTeam===game.homeTeam&&g.awayTeam===game.awayTeam));
     const spreadStr = game.spread!==null ? `${fmtSpread(game.spread,game.favorite,game)} ${game.spreadSource==='espn'?'(ESPN)':'(Manual)'}` : '⚠️ TBD';
