@@ -29,6 +29,21 @@ let _pushTimer = null;
 const _dirty = new Set();      // keys changed since last push
 const _listeners = new Set();  // status change subscribers
 
+// Sync observability — exposed via getSyncStatus() so the UI can render a
+// human-readable "synced 12s ago" / "3 pending writes" / "last error: …" panel.
+let _lastSyncAt = null;        // ISO timestamp of last successful push or pull
+let _lastError = null;         // last error message or null
+
+export function getSyncStatus() {
+  return {
+    ready: _ready,
+    configured: !!(getBackendConfig() && getBackendConfig().url),
+    lastSyncAt: _lastSyncAt,
+    lastError: _lastError,
+    pendingWrites: _dirty.size,
+  };
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 export function getBackendConfig() {
   if (_config) return _config;
@@ -87,12 +102,20 @@ export async function pingBackend() {
 // ── Hydrate the in-memory mirror from the Sheet ────────────────────────────────
 export async function hydrate() {
   emit('syncing');
-  const data = await call('getAll');
-  _cache.clear();
-  Object.entries(data.data || {}).forEach(([k, v]) => _cache.set(k, v));
-  _ready = true;
-  emit('synced', { keys: _cache.size });
-  return _cache.size;
+  try {
+    const data = await call('getAll');
+    _cache.clear();
+    Object.entries(data.data || {}).forEach(([k, v]) => _cache.set(k, v));
+    _ready = true;
+    _lastSyncAt = new Date().toISOString();
+    _lastError = null;
+    emit('synced', { keys: _cache.size });
+    return _cache.size;
+  } catch (err) {
+    _lastError = String(err.message || err);
+    emit('error', { error: _lastError });
+    throw err;
+  }
 }
 
 /**
@@ -137,12 +160,15 @@ export async function flushPush() {
   emit('syncing');
   try {
     await call('setMany', { entries });
+    _lastSyncAt = new Date().toISOString();
+    _lastError = null;
     emit('synced', { pushed: Object.keys(entries).length });
     return { pushed: Object.keys(entries).length };
   } catch (err) {
     // Re-mark dirty so a later push retries
     Object.keys(entries).forEach(k => _dirty.add(k));
-    emit('error', { error: String(err.message || err) });
+    _lastError = String(err.message || err);
+    emit('error', { error: _lastError });
     throw err;
   }
 }

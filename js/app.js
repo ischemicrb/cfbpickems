@@ -43,6 +43,7 @@ import {
   getTiebreakerGuess, setTiebreakerGuess, getTiebreakerGuesses,
   getRejectedSuggestions, rejectSuggestion, unrejectSuggestion,
   clearRejectedSuggestions, isSuggestionRejected, suggestionKeyOf,
+  getReactionsForGame, toggleReaction,
   countPicksForGame, deletePicksForGame,
   saveFetchProof, getFetchProof,
   getTimezone, setTimezone,
@@ -72,7 +73,7 @@ import {
   isBackendConfigured, isBackendReady, pingBackend,
   hydrate as hydrateBackend, seedFromLocal, flushPush,
   refreshFromBackend, createSnapshot, listSnapshots, restoreSnapshot,
-  onBackendStatus,
+  onBackendStatus, getSyncStatus,
 } from './backend.js';
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
@@ -121,6 +122,12 @@ async function boot() {
   onBackendStatus((status) => updateSyncBadge(status));
 
   setupNav(); refreshHeader(); renderTzToggle(); renderThemeToggle(); applyTheme(getTheme()); setupAutoRefresh();
+  // First-run mobile default: if no preference saved AND viewport is phone-sized,
+  // start in compact view so the All-Picks-by-Game matrix doesn't overflow.
+  // Desktop stays standard. User can flip anytime.
+  if (!getSettings().dashboardLayout && typeof window !== 'undefined' && window.innerWidth && window.innerWidth < 600) {
+    saveSetting('dashboardLayout', 'compact');
+  }
   if (!isSiteUnlocked()) { showSitePinGate(); return; }
   navigateTo('dashboard');
 
@@ -238,6 +245,24 @@ function isGamePickable(game) {
   return new Date() < new Date(game.kickoff);
 }
 
+/**
+ * Whether the given viewer is allowed to see OTHER players' picks/tiebreakers
+ * for this week. True when (a) the viewer is admin, (b) the week is live/final
+ * (everything is public), or (c) the viewer has already submitted their own
+ * picks (blind-picks rule is satisfied for them). Used by tiebreaker cells
+ * which need to hide other people's guesses with *** until the viewer earns
+ * the right to see them.
+ */
+function canViewOtherPicks(week, viewerPlayerId) {
+  if (!week) return false;
+  const sess = getSession();
+  if (sess.isAdmin) return true;
+  const eff = getEffectiveWeekStatus(week);
+  if (eff === 'live' || eff === 'final') return true;
+  if (!viewerPlayerId) return false;
+  return hasPlayerSubmitted(week.weekId, viewerPlayerId);
+}
+
 // ─── PICKS PAGE ───────────────────────────────────────────────────────────────
 
 function renderPicksPage() {
@@ -340,7 +365,6 @@ function renderLoginScreen(week) {
             maxlength="8" placeholder="PIN…" style="flex:1;letter-spacing:.2em;font-size:1.2rem"/>
           <button class="btn btn-primary" id="pin-submit-btn">Enter →</button>
         </div>
-        <p class="text-muted text-xs mt-sm">Default PINs: Drew=1111, Brayden=2222, Kevin=3333, Koby=4444, Jacob=5555, Kihoon=6666</p>
         <button class="btn btn-ghost btn-sm mt-sm" id="cancel-player-btn">← Back</button>
       </div>
     </div>`;
@@ -538,7 +562,7 @@ function renderGameCard(game, pickedTeam, result, isLocked, showResult) {
         <div class="vs-divider">@</div>
         <div class="team home">
           ${homeRk?`<div class="team-rank">${homeRk}</div>`:''}
-          <div class="team-name">${escHtml(game.homeTeam)}${homeMasc?` <span class="team-mascot">(${escHtml(homeMasc)})</span>`:''}${game.neutralSite?'':' <span class="home-badge" title="Home team">H</span>'}</div>
+          <div class="team-name">${escHtml(game.homeTeam)}${homeMasc?` <span class="team-mascot">(${escHtml(homeMasc)})</span>`:''}</div>
           <div class="team-conf">${escHtml(game.homeConference||'')}</div>
         </div>
       </div>
@@ -548,7 +572,7 @@ function renderGameCard(game, pickedTeam, result, isLocked, showResult) {
       <div class="spread-row"><span class="text-muted text-xs">Spread:</span>${spreadDisplay}</div>
       ${!showResult?`<div class="pick-buttons">
         <button class="${awayCls}" data-team="${escHtml(game.awayTeam)}" data-game-id="${game.gameId}" ${dis}>${escHtml(awayDisplay)}</button>
-        <button class="${homeCls}" data-team="${escHtml(game.homeTeam)}" data-game-id="${game.gameId}" ${dis}>${escHtml(homeDisplay)}${game.neutralSite?'':' <span class="home-badge-btn">H</span>'}</button>
+        <button class="${homeCls}" data-team="${escHtml(game.homeTeam)}" data-game-id="${game.gameId}" ${dis}>${escHtml(homeDisplay)}</button>
       </div>`:''}
       ${game.espnEventId?`<div class="text-muted text-xs mt-sm text-right">ESPN: ${game.espnEventId}</div>`:''}
     </div>
@@ -660,15 +684,14 @@ function renderAlmaMaterWatch(weekId, games) {
       getAlmaMaterMatch(g.homeTeam) === alma || getAlmaMaterMatch(g.awayTeam) === alma
     );
     if (!game) {
-      const almaDisplay = ALMA_MATER_DISPLAY[alma] || alma;
     return `<div class="alma-watch-row">
-        <span class="alma-watch-team">${escHtml(almaDisplay)}</span>
+        <span class="alma-watch-team">${escHtml(alma)}</span>
         <span class="alma-watch-bye">BYE</span>
       </div>`;
     }
     // Use precise matching to decide which side is the alma mater (avoid Arkansas/Arkansas State false positives)
     const isHome  = getAlmaMaterMatch(game.homeTeam) === alma;
-    const opp     = isHome ? td(game,'away') : td(game,'home');
+    const opp     = isHome ? teamSchool(game,'away') : teamSchool(game,'home');
     const myRank  = isHome ? game.homeRank : game.awayRank;
     const oppRank = isHome ? game.awayRank : game.homeRank;
     const rankStr = myRank ? `#${myRank} ` : '';
@@ -685,12 +708,11 @@ function renderAlmaMaterWatch(weekId, games) {
     } else if (game.status===GAME_STATUS.LIVE&&game.homeScore!==null) {
       const myScore  = isHome?game.homeScore:game.awayScore;
       const oppScore = isHome?game.awayScore:game.homeScore;
-      scoreStr = ` · <span class="result-live">🔴 ${myScore}–${oppScore}</span>`;
+      scoreStr = ` · <span class="live-pill"><span class="live-dot"></span>${myScore}–${oppScore}</span>`;
     }
 
-    const almaDisplay = ALMA_MATER_DISPLAY[alma] || alma;
     return `<div class="alma-watch-row">
-      <span class="alma-watch-team">${rankStr}${escHtml(almaDisplay)}</span>
+      <span class="alma-watch-team">${rankStr}${escHtml(alma)}</span>
       <span class="alma-watch-matchup">${loc} ${escHtml(oppStr)}</span>
       <span class="alma-watch-time">${timeStr}${scoreStr}</span>
     </div>`;
@@ -706,8 +728,7 @@ function renderAlmaMaterWatch(weekId, games) {
 
 function renderDashboard() {
   const c=document.getElementById('page-dashboard'); if(!c)return;
-  const session=getSession();
-  const allWeeks=getWeeks().filter(w=>w.status!==WEEK_STATUS.DRAFT).sort((a,b)=>b.weekNumber-a.weekNumber);
+  const session=getSession();  const allWeeks=getWeeks().filter(w=>w.status!==WEEK_STATUS.DRAFT).sort((a,b)=>b.weekNumber-a.weekNumber);
   const currentWeek=getCurrentWeek();
   if(!currentWeek&&!allWeeks.length){c.innerHTML=emptyState('📊','No Weeks Yet','Commissioner needs to open a week.');return;}
 
@@ -757,10 +778,16 @@ function renderDashboard() {
 
     <!-- 1. ALL PICKS BY GAME — primary section per requirements (DI-22) -->
     <div class="card mb-md">
-      <div class="card-header"><span class="card-title">📋 All Picks by Game</span></div>
-      <div class="dashboard-scroll">
-        ${renderDashboardTable(players,games,allPicks,weeklyResults,week.weekId,actualTB)}
+      <div class="card-header card-header-row">
+        <span class="card-title">📋 All Picks by Game</span>
+        <div class="layout-toggle" role="group" aria-label="View density">
+          <button class="layout-toggle-btn${(getSettings().dashboardLayout||'standard')==='standard'?' active':''}" data-layout="standard" title="Wide matrix">Standard</button>
+          <button class="layout-toggle-btn${getSettings().dashboardLayout==='compact'?' active':''}" data-layout="compact" title="Mobile-friendly stacked view">Compact</button>
+        </div>
       </div>
+      ${(getSettings().dashboardLayout==='compact')
+        ? `<div class="dashboard-compact">${renderDashboardCompact(players,games,allPicks,weeklyResults,week.weekId,actualTB)}</div>`
+        : `<div class="dashboard-scroll">${renderDashboardTable(players,games,allPicks,weeklyResults,week.weekId,actualTB)}</div>`}
     </div>
 
     <!-- 2. ALMA MATER WATCH -->
@@ -774,17 +801,30 @@ function renderDashboard() {
     <div class="card mb-md">
       <div class="card-header"><span class="card-title">This Week Score Summary</span></div>
       <table class="leaderboard-table">
-        <thead><tr><th>#</th><th>Player</th><th>✅</th><th>❌</th><th>—</th><th>Tiebreaker</th></tr></thead>
+        <thead><tr><th>#</th><th>Player</th><th>✅</th><th>❌</th><th>Tiebreaker</th></tr></thead>
         <tbody>
           ${weeklyResults.map(r=>{
             const name=getDisplayNamePlain(week.weekId,r.playerId,players);
-            const tbDisp=actualTB!==null&&r.tiebreakerGuess!==null?`${r.tiebreakerGuess} (Δ${r.tiebreakerDelta})`:r.tiebreakerGuess!==null?String(r.tiebreakerGuess):'—';
+            // Tiebreaker privacy: only reveal another player's guess once the viewer is allowed
+            // to see all picks (week is live/final, OR viewer has submitted their own).
+            const canSeeOthers = canViewOtherPicks(week, session.playerId);
+            const isSelf = session.playerId === r.playerId;
+            const submitted = r.tiebreakerGuess !== null && r.tiebreakerGuess !== undefined;
+            let tbDisp;
+            if (!submitted) {
+              tbDisp = '—';                                      // hasn't submitted
+            } else if (!canSeeOthers && !isSelf) {
+              tbDisp = '<span class="tb-hidden" title="Visible once you submit your picks">***</span>'; // hidden from this viewer
+            } else if (actualTB !== null) {
+              tbDisp = `${r.tiebreakerGuess} (Δ${r.tiebreakerDelta})`;
+            } else {
+              tbDisp = String(r.tiebreakerGuess);
+            }
             return`<tr class="${r.isWinner?'winner-row':r.isLoser?'loser-row':''}">
               <td class="rank-cell rank-${r.rank}">${r.rank}</td>
               <td class="player-name-cell">${escHtml(name)}${r.isWinner?' 🏆':r.isLoser?' 💀':''}${r.wonByTiebreaker?' <span class="text-xs text-muted">(TB)</span>':''}</td>
               <td class="result-win">${r.correctPicks}</td>
               <td class="result-loss">${r.incorrectPicks}</td>
-              <td class="result-nd">${r.noDecisions}</td>
               <td class="text-muted text-sm">${tbDisp}</td>
             </tr>`;
           }).join('')}
@@ -794,6 +834,16 @@ function renderDashboard() {
 `;
 
   document.getElementById('week-selector')?.addEventListener('change',e=>{state.dashboardWeekId=e.target.value;renderDashboard();});
+  // Standard / Compact view toggle for the All-Picks-by-Game card. Persists
+  // in settings.dashboardLayout so a user's mobile preference sticks across reloads.
+  document.querySelectorAll('.layout-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      saveSetting('dashboardLayout', btn.dataset.layout);
+      renderDashboard();
+    });
+  });
+  // Wire up reaction chips + "+" pickers in whichever view is rendered
+  bindReactionHandlers(players);
   document.getElementById('manual-refresh-btn')?.addEventListener('click',async()=>{
     showToast('🔄 Refreshing…','warning');
     await doRefreshScores(week,games); renderDashboard();
@@ -854,9 +904,9 @@ function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actual
       const pick=allPicks.find(pk=>pk.gameId===game.gameId&&pk.playerId===player.playerId);
       if(!pick)return'<td class="pick-cell">—</td>';
       const result=evaluatePick(pick,game);
-      // Picked team display (School (Mascot))
+      // Picked team display (school only — matrix is tight, mascot adds noise here)
       const pickedSide = pick.selectedTeam === game.homeTeam ? 'home' : (pick.selectedTeam === game.awayTeam ? 'away' : null);
-      const pickedDisplay = pickedSide ? td(game, pickedSide) : pick.selectedTeam;
+      const pickedDisplay = pickedSide ? teamSchool(game, pickedSide) : pick.selectedTeam;
 
       // LIVE: soft, pulsing covering/trailing tint — distinct from finalized boxes.
       if (result===PICK_RESULT.LIVE) {
@@ -879,12 +929,16 @@ function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actual
 
     return`<tr>
       <td class="game-info-cell">
-        <div class="game-info-matchup">${escHtml(matchup(game, { showH: true }))}</div>
+        <div class="game-info-matchup">${escHtml(matchupBare(game))}</div>
         <div class="game-info-meta">
           <span class="spread-badge-sm">${spreadStr}</span>
           ${statusInfo}
           ${ats?`<span style="font-size:.68rem;color:var(--maroon)">ATS: ${escHtml(atsLabel)}</span>`:''}
+          ${game.espnEventId
+            ? `<a class="espn-link" href="https://www.espn.com/college-football/game/_/gameId/${encodeURIComponent(game.espnEventId)}" target="_blank" rel="noopener noreferrer" title="Open ESPN gamecast in a new tab">ESPN ↗</a>`
+            : ''}
         </div>
+        ${renderReactionStrip(weekId, game.gameId, players)}
       </td>${pickCells}
     </tr>`;
   }).join('');
@@ -893,6 +947,191 @@ function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actual
     <thead><tr><th>Game / Spread</th>${headers}</tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
+}
+
+// ─── EMOJI REACTIONS ─────────────────────────────────────────────────────────
+// Slack-style reactions on dashboard games. State lives in storage (auto-syncs
+// in Sheets mode); UI is a small strip of chips per game with a "+" picker.
+// Only logged-in players can react. Tapping the same emoji removes the vote.
+
+const REACTION_PALETTE = ['😀','😭','🤡','🔥','😬','🫡'];
+
+/**
+ * Render the reactions strip for one game. Returns a span with chips for each
+ * emoji that has at least one vote, plus a "+" button to open the picker.
+ * `players` is passed in so tooltips can name who reacted.
+ */
+function renderReactionStrip(weekId, gameId, players) {
+  const reactions = getReactionsForGame(weekId, gameId);
+  const session = getSession();
+  const myPid = session?.playerId || null;
+  const playerById = Object.fromEntries(players.map(p => [p.playerId, p.displayName]));
+
+  const chips = Object.entries(reactions).map(([emoji, pids]) => {
+    if (!pids?.length) return '';
+    const names = pids.map(id => playerById[id] || '?').join(', ');
+    const mine = myPid && pids.includes(myPid);
+    return `<button type="button" class="reaction-chip${mine?' reaction-chip-mine':''}"
+      data-week-id="${escHtml(weekId)}" data-game-id="${escHtml(gameId)}" data-emoji="${escHtml(emoji)}"
+      title="${escHtml(names)}">
+      <span class="reaction-chip-emoji">${emoji}</span>
+      <span class="reaction-chip-count">${pids.length}</span>
+    </button>`;
+  }).join('');
+
+  // The "+" picker is only useful when there's a logged-in player to attribute
+  // the reaction to. Hide it for anonymous viewers.
+  const addBtn = myPid
+    ? `<button type="button" class="reaction-add-btn" data-week-id="${escHtml(weekId)}" data-game-id="${escHtml(gameId)}" title="Add reaction">+</button>`
+    : '';
+
+  return `<span class="reaction-strip" data-reaction-strip="${escHtml(weekId)}::${escHtml(gameId)}">${chips}${addBtn}</span>`;
+}
+
+/**
+ * Re-renders just one game's reaction strip after a toggle, so we don't have
+ * to redraw the whole dashboard. Looks up the strip by its data-reaction-strip
+ * attribute and replaces its innerHTML.
+ */
+function refreshReactionStrip(weekId, gameId, players) {
+  const sel = `[data-reaction-strip="${weekId}::${gameId}"]`;
+  document.querySelectorAll(sel).forEach(node => {
+    const fresh = renderReactionStrip(weekId, gameId, players);
+    // Replace the whole element so its data-* attributes stay current.
+    const tmp = document.createElement('div');
+    tmp.innerHTML = fresh;
+    if (tmp.firstElementChild) node.replaceWith(tmp.firstElementChild);
+  });
+  // Re-bind handlers for the (re-rendered) strip.
+  bindReactionHandlers(players);
+}
+
+/**
+ * Wires click handlers on every reaction chip + "+" picker on the page.
+ * Idempotent — safe to call after every re-render. Picker uses a tiny inline
+ * popover anchored to the "+" button.
+ */
+function bindReactionHandlers(players) {
+  // Toggle vote on an existing emoji
+  document.querySelectorAll('.reaction-chip').forEach(btn => {
+    if (btn._wired) return; btn._wired = true;
+    btn.addEventListener('click', () => {
+      const session = getSession();
+      if (!session?.playerId) { showToast('Log in as a player to react','warning'); return; }
+      const { weekId, gameId, emoji } = btn.dataset;
+      toggleReaction(weekId, gameId, emoji, session.playerId);
+      refreshReactionStrip(weekId, gameId, players);
+    });
+  });
+  // Open the picker
+  document.querySelectorAll('.reaction-add-btn').forEach(btn => {
+    if (btn._wired) return; btn._wired = true;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Close any other open pickers
+      document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
+      const { weekId, gameId } = btn.dataset;
+      const picker = document.createElement('div');
+      picker.className = 'reaction-picker';
+      picker.innerHTML = REACTION_PALETTE.map(em =>
+        `<button type="button" class="reaction-pick-option" data-emoji="${em}" title="${em}">${em}</button>`
+      ).join('');
+      btn.parentElement.appendChild(picker);
+      picker.querySelectorAll('.reaction-pick-option').forEach(opt => {
+        opt.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const session = getSession();
+          if (!session?.playerId) { showToast('Log in to react','warning'); picker.remove(); return; }
+          toggleReaction(weekId, gameId, opt.dataset.emoji, session.playerId);
+          picker.remove();
+          refreshReactionStrip(weekId, gameId, players);
+        });
+      });
+      // Click anywhere else closes the picker
+      const closer = (ev) => { if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener('click', closer); } };
+      setTimeout(() => document.addEventListener('click', closer), 0);
+    });
+  });
+}
+
+/**
+ * Compact alternative to the wide matrix above — optimized for narrow phone
+ * screens. Each game is one stacked card; player picks are rendered as small
+ * initial-chips so a 6-player league fits on one mobile row. Same data, same
+ * status semantics (final win/loss boxes, pulsing live tints) — just denser.
+ *
+ * Decisions:
+ *  - Player initials in chips (not full names) — every player fits on one row.
+ *  - Game matchup is bare schools (Away @ Home), no mascot, same as matrix.
+ *  - Live and final colour languages match the matrix exactly so users learn
+ *    one visual system, not two.
+ *  - Picked-team text under each chip uses a short form (last word of the
+ *    school name) to keep the chip narrow but still readable.
+ */
+function renderDashboardCompact(players, games, allPicks, weeklyResults, weekId, actualTB) {
+  const session = getSession();
+  const picks = allPicks;
+  const submitted = players.filter(p => picks.some(pk => pk.playerId === p.playerId));
+  if (!games.length) return '<div class="info-box">No games on the slate yet.</div>';
+
+  // Short label = last word of the school name, capped at 4 chars
+  // (e.g. "Texas A&M" → "A&M", "North Carolina" → "Caro").
+  const shortLabel = (name) => {
+    if (!name) return '';
+    const last = name.split(/\s+/).pop() || name;
+    return last.length > 4 ? last.slice(0, 4) : last;
+  };
+
+  const sortedGames = [...games].sort((a,b) => new Date(a.kickoff||0) - new Date(b.kickoff||0));
+
+  const gameCards = sortedGames.map(game => {
+    const sv = game.lockedSpread !== null ? game.lockedSpread : game.spread;
+    const spreadStr = sv !== null ? fmtSpread(sv, game.favorite, game) : (game.status === GAME_STATUS.FINAL ? 'Final' : 'TBD');
+    let statusInfo;
+    if (game.status === GAME_STATUS.FINAL && game.homeScore !== null) {
+      statusInfo = `<span class="dc-status dc-final">FINAL ${game.homeScore}–${game.awayScore}</span>`;
+    } else if (game.status === GAME_STATUS.LIVE && game.homeScore !== null) {
+      statusInfo = `<span class="dc-status dc-live"><span class="live-dot"></span>${game.homeScore}–${game.awayScore}</span>`;
+    } else {
+      statusInfo = `<span class="dc-status dc-scheduled">${fmtTime(game.kickoff, game)}</span>`;
+    }
+
+    const chips = submitted.map(player => {
+      const pick = picks.find(pk => pk.gameId === game.gameId && pk.playerId === player.playerId);
+      const initials = escHtml(getPlayerInitials(player));
+      if (!pick) {
+        return `<div class="dc-chip dc-chip-none" title="${escHtml(player.displayName)}: no pick"><span class="dc-chip-init">${initials}</span><span class="dc-chip-pick">—</span></div>`;
+      }
+      const result = evaluatePick(pick, game);
+      const pickedSide = pick.selectedTeam === game.homeTeam ? 'home' : pick.selectedTeam === game.awayTeam ? 'away' : null;
+      const pickShort = pickedSide ? shortLabel(teamSchool(game, pickedSide)) : shortLabel(pick.selectedTeam);
+      let cls = 'dc-chip-pending';
+      let icon = '';
+      if (result === PICK_RESULT.LIVE) {
+        const ls = livePickStatus(pick, game);
+        if (ls === 'covering') { cls = 'dc-chip-live-covering'; icon = '▲'; }
+        else if (ls === 'trailing') { cls = 'dc-chip-live-trailing'; icon = '▽'; }
+        else { cls = 'dc-chip-live'; }
+      } else if (result === PICK_RESULT.WIN) { cls = 'dc-chip-win'; icon = '✓'; }
+      else if (result === PICK_RESULT.LOSS) { cls = 'dc-chip-loss'; icon = '✗'; }
+      else if (result === PICK_RESULT.NO_DECISION) { cls = 'dc-chip-nd'; icon = '—'; }
+      return `<div class="dc-chip ${cls}" title="${escHtml(player.displayName)} picked ${escHtml(pick.selectedTeam)}"><span class="dc-chip-init">${initials}</span><span class="dc-chip-pick">${escHtml(pickShort)}${icon?` ${icon}`:''}</span></div>`;
+    }).join('');
+
+    const espn = game.espnEventId
+      ? ` · <a class="espn-link" href="https://www.espn.com/college-football/game/_/gameId/${encodeURIComponent(game.espnEventId)}" target="_blank" rel="noopener noreferrer">ESPN ↗</a>`
+      : '';
+    return `<div class="dc-game">
+      <div class="dc-game-head">
+        <div class="dc-matchup">${escHtml(matchupBare(game))}</div>
+        <div class="dc-meta"><span class="spread-badge-sm">${escHtml(spreadStr)}</span>${statusInfo}${espn}</div>
+      </div>
+      <div class="dc-chips">${chips}</div>
+      ${renderReactionStrip(weekId, game.gameId, players)}
+    </div>`;
+  }).join('');
+
+  return gameCards;
 }
 
 // ─── LEADERBOARD / STANDINGS ──────────────────────────────────────────────────
@@ -1304,7 +1543,7 @@ function renderCommPage() {
       <div class="admin-section">
         <div class="admin-section-title">Players, PINs &amp; Contact</div>
         <div class="card">
-          <p class="text-muted text-xs mb-md">PINs are hidden by default. Toggle 👁 to reveal. Save an email per player to share PINs and league updates. Player PINs never appear anywhere outside this panel.</p>
+          <p class="text-muted text-xs mb-md">PINs are hidden by default. Toggle 🙈 to reveal. Save an email per player to share PINs and league updates. Player PINs never appear anywhere outside this panel.</p>
           ${players.map(p=>{
             const pin = getPlayerPin(p.playerId);
             return `
@@ -1321,7 +1560,7 @@ function renderCommPage() {
                   <label class="micro-label">PIN</label>
                   <div class="pin-field">
                     <input class="form-input pin-input" type="password" data-pin="${escHtml(pin)}" value="${escHtml(pin)}" readonly autocomplete="off" />
-                    <button class="btn btn-ghost btn-sm pin-toggle-btn" data-player-id="${p.playerId}" title="Show/hide PIN">👁</button>
+                    <button class="btn btn-ghost btn-sm pin-toggle-btn" data-player-id="${p.playerId}" title="Show/hide PIN">🙈</button>
                   </div>
                 </div>
                 <div class="player-admin-field">
@@ -1402,14 +1641,48 @@ function renderCommPage() {
     const beCfg = getBackendConfig() || { url:'', token:'' };
     const beMode = getBackendMode();
     const beReady = isBackendReady();
+    const syncStatus = getSyncStatus();
+    // Friendly "12 seconds ago" formatter
+    const syncAgo = (iso) => {
+      if (!iso) return 'never';
+      const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+      if (s < 5) return 'just now';
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.floor(s/60)}m ago`;
+      if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+      return new Date(iso).toLocaleString();
+    };
     sections.push(`
       <div class="admin-section">
         <div class="admin-section-title">☁️ Cloud Sync (Google Sheets)</div>
         <div class="card">
-          <p class="text-secondary text-sm mb-md">
+          <p class="text-secondary text-sm mb-sm">
             Connect a Google Sheet so all players share the same data across devices.
             Status: <strong>${beMode==='googleSheets'&&beReady?'✅ Connected':beMode==='googleSheets'?'⚠️ Configured, not connected':'⚪ Local only (this device)'}</strong>
           </p>
+
+          ${beMode==='googleSheets'&&beReady ? `
+          <div class="sync-status-panel">
+            <div class="card-title mb-sm">What syncs &amp; when</div>
+            <ul class="sync-explainer">
+              <li><strong>Every write auto-syncs.</strong> Player pick submissions, commissioner edits to games/spreads/scores, results calculations, reset operations — all push to the Sheet automatically within ~1 second.</li>
+              <li><strong>Reads</strong> use a local in-memory mirror seeded from the Sheet at startup, so the app stays fast and works briefly offline. Pull manually (below) to refresh from a teammate's recent edit.</li>
+              <li><strong>Device-local</strong> (does NOT sync, by design): your login session, the site-PIN unlock state, and the Sheet URL/token on this device.</li>
+              <li><strong>If a sync fails</strong> (network drop, Sheet quota hit) the change is queued in the local cache and retries on the next write. The status badge at the top shows ⚠️ when this happens.</li>
+              <li><strong>Manual exports</strong> (Export Data section) still work and are recommended as periodic offline backups in addition to auto-sync.</li>
+            </ul>
+            <div class="sync-stats">
+              <div><span class="micro-label">Last successful sync</span><strong>${syncAgo(syncStatus.lastSyncAt)}</strong></div>
+              <div><span class="micro-label">Pending writes</span><strong>${syncStatus.pendingWrites}</strong></div>
+              <div><span class="micro-label">Last error</span><strong>${syncStatus.lastError ? escHtml(syncStatus.lastError) : '—'}</strong></div>
+            </div>
+            <div class="flex gap-sm mt-sm flex-wrap">
+              <button class="btn btn-ghost btn-sm" id="be-flush-now-btn">⚡ Flush pending now</button>
+              <button class="btn btn-ghost btn-sm" id="be-pull-now-btn">⬇️ Pull latest from Sheet</button>
+            </div>
+          </div>
+          ` : ''}
+
           <div class="form-group">
             <label class="form-label">Web App URL <span class="text-muted text-xs">(ends in /exec)</span></label>
             <input class="form-input" id="be-url" placeholder="https://script.google.com/macros/s/…/exec" value="${escHtml(beCfg.url||'')}" />
@@ -1628,7 +1901,12 @@ function filterAndGroupAvailableGames(availGames) {
     switch (f.groupBy) {
       case 'date':       return shortDateOf(g.kickoff);
       case 'day':        return dayOfWeekOf(g.kickoff);
-      case 'conference': return [g.homeConference, g.awayConference].filter(Boolean).join(' / ') || 'Unknown';
+      case 'conference': {
+        // When the API didn't surface a conference, group those games together
+        // under an honest label rather than the alarming "Unknown".
+        const parts = [g.homeConference, g.awayConference].filter(Boolean);
+        return parts.length ? parts.join(' / ') : 'Conference not listed';
+      }
       case 'region':     return conferenceRegion(g.homeConference) || 'Other';
       case 'rank':       return (g.homeRank || g.awayRank) ? 'Ranked' : 'Unranked';
       default:           return 'All';
@@ -1861,21 +2139,30 @@ function wireCollapsibleSections(container) {
   const collapsed = settings.commPanelSectionsCollapsed || {};
   const hidden    = settings.commPanelSectionsHidden    || {};
 
-  // Build a compact "Sections" menu at the top — checkboxes for show/hide,
-  // plus expand-all / collapse-all shortcuts. Inserted only once per render.
+  // Build a compact "Sections" menu at the BOTTOM of the Commissioner panel
+  // (secondary controls — primary workflow stays at the top). Collapsed by
+  // default so it's out of the way until needed.
   if (!container.querySelector('.section-menu')) {
     const menuEl = document.createElement('div');
-    menuEl.className = 'admin-section section-menu';
+    menuEl.className = 'admin-section section-menu admin-section-collapsed';
+    menuEl.dataset.section = '_section_menu';
+    menuEl.dataset.sectionTitle = 'Sections';
     menuEl.innerHTML = `
-      <div class="admin-section-title section-menu-title">📚 Sections
+      <div class="admin-section-title admin-section-title-toggle section-menu-title">📚 Sections
         <span class="section-menu-actions">
           <button class="btn btn-ghost btn-sm" id="sec-expand-all">Expand all</button>
           <button class="btn btn-ghost btn-sm" id="sec-collapse-all">Collapse all</button>
           <button class="btn btn-ghost btn-sm" id="sec-show-all">Show all</button>
         </span>
+        <span class="section-chevron">▾</span>
       </div>
       <div class="section-menu-grid" id="section-menu-grid"></div>`;
-    container.insertBefore(menuEl, sections[0]);
+    container.appendChild(menuEl);
+    // Click the title (but not the buttons) to expand/collapse the menu itself
+    menuEl.querySelector('.admin-section-title-toggle')?.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      menuEl.classList.toggle('admin-section-collapsed');
+    });
   }
 
   // Wrap each section's body so we can collapse it without losing event bindings.
@@ -2238,7 +2525,8 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
     const g=getGame(gid); if(!g)return;
     const hs=parseInt(document.getElementById('demo-home-score')?.value)||0;
     const as_=parseInt(document.getElementById('demo-away-score')?.value)||0;
-    saveGame({...g,status:'live',homeScore:hs,awayScore:as_,lastUpdated:new Date().toISOString()});
+    // Mark as manual so the ESPN auto-refresh won't overwrite the simulated score.
+    saveGame({...g,status:'live',homeScore:hs,awayScore:as_,dataSource:'manual',lastUpdated:new Date().toISOString()});
     showToast(`${td(g,'home')} vs ${td(g,'away')}: LIVE ${hs}–${as_}`,'success'); renderCommPage();
   });
   document.getElementById('demo-set-final')?.addEventListener('click',()=>{
@@ -2251,13 +2539,13 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
     const sv=g.lockedSpread!==null?g.lockedSpread:g.spread;
     let atsWinner=null;
     if(sv!==null){const adj=hs+sv;if(Math.abs(adj-as_)<0.01)atsWinner='no_decision';else atsWinner=adj>as_?g.homeTeam:g.awayTeam;}
-    saveGame({...g,status:'final',homeScore:hs,awayScore:as_,actualWinner,atsWinner,lastUpdated:new Date().toISOString()});
+    saveGame({...g,status:'final',homeScore:hs,awayScore:as_,actualWinner,atsWinner,dataSource:'manual',lastUpdated:new Date().toISOString()});
     showToast(`FINAL: ${td(g,'home')} ${hs} – ${td(g,'away')} ${as_}`,'success'); renderCommPage();
   });
   document.getElementById('demo-set-scheduled')?.addEventListener('click',()=>{
     const gid=demoGameSel?.value; if(!gid)return;
     const g=getGame(gid); if(!g)return;
-    saveGame({...g,status:'scheduled',homeScore:null,awayScore:null,actualWinner:null,atsWinner:null});
+    saveGame({...g,status:'scheduled',homeScore:null,awayScore:null,actualWinner:null,atsWinner:null,dataSource:'manual'});
     showToast('Reset to scheduled','warning'); renderCommPage();
   });
   document.getElementById('demo-update-score')?.addEventListener('click',()=>{
@@ -2265,7 +2553,7 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
     const g=getGame(gid); if(!g)return;
     const hs=parseInt(document.getElementById('demo-home-score')?.value)||0;
     const as_=parseInt(document.getElementById('demo-away-score')?.value)||0;
-    saveGame({...g,homeScore:hs,awayScore:as_,lastUpdated:new Date().toISOString()});
+    saveGame({...g,homeScore:hs,awayScore:as_,dataSource:'manual',lastUpdated:new Date().toISOString()});
     showToast(`Score updated: ${hs}–${as_}`,'success');
   });
   document.getElementById('demo-finalize-all')?.addEventListener('click',()=>{
@@ -2314,6 +2602,7 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
         awayScore: status==='scheduled'?null:as_,
         actualWinner: status==='final'?actualWinner:null,
         atsWinner: status==='final'?atsWinner:null,
+        dataSource:'manual',  // protect simulated state from ESPN auto-refresh
         lastUpdated:new Date().toISOString(),
       });
       applied++;
@@ -2415,7 +2704,7 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
       if (!input) return;
       const showing = input.type === 'text';
       input.type = showing ? 'password' : 'text';
-      btn.textContent = showing ? '👁' : '🙈';
+      btn.textContent = showing ? '🙈' : '🙉';
     });
   });
 
@@ -2615,6 +2904,26 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
     }catch(err){showToast(`❌ ${err.message||err}`,'error');}
   });
 
+  // Flush any debounced pending writes to the Sheet immediately. Useful when
+  // the user is about to close the tab and wants the most recent edits to land.
+  document.getElementById('be-flush-now-btn')?.addEventListener('click', async ()=>{
+    showToast('⏳ Flushing pending writes…','warning');
+    try {
+      const r = await flushPush();
+      showToast(r.pushed ? `✅ Pushed ${r.pushed} pending writes` : '✅ Nothing pending — already synced','success');
+      renderCommPage();
+    } catch(err){ showToast(`❌ Flush failed: ${err.message||err}`,'error'); }
+  });
+  // Same as the existing be-pull-btn but available inside the status panel for proximity.
+  document.getElementById('be-pull-now-btn')?.addEventListener('click', async ()=>{
+    showToast('⏳ Pulling latest…','warning');
+    try {
+      await refreshFromBackend();
+      showToast('✅ Pulled latest from Sheet','success');
+      renderCommPage();
+    } catch(err){ showToast(`❌ Pull failed: ${err.message||err}`,'error'); }
+  });
+
   document.getElementById('be-snapshot-btn')?.addEventListener('click', async ()=>{
     if(!isBackendConfigured()){showToast('Save & connect first','error');return;}
     const label=prompt('Snapshot label (optional, e.g. "End of Week 5"):')||'';
@@ -2715,7 +3024,6 @@ function renderCommLogin(c) {
       <div class="form-group"><label class="form-label">Password</label>
         <input class="form-input" id="comm-password-input" type="password" placeholder="Password…" /></div>
       <button class="btn btn-primary btn-block" id="comm-login-btn">Login</button>
-      <p class="text-muted text-xs text-center mt-md">Default: admin123</p>
     </div>`;
   document.getElementById('comm-login-btn')?.addEventListener('click', ()=>{
     const val=document.getElementById('comm-password-input')?.value||'';
@@ -2968,16 +3276,27 @@ function setupAutoRefresh() {
   const{autoRefreshInterval=60}=getSettings();
   if(!autoRefreshInterval)return;
   _refreshTimer=setInterval(async()=>{
-    if(state.currentTab==='dashboard'){
-      const week=getCurrentWeek();
-      if(week){await doRefreshScores(week,getGames(week.weekId));renderDashboard();}
-    }
+    if(state.currentTab!=='dashboard') return;
+    const week=getCurrentWeek();
+    if(!week) return;
+    // Skip auto-refresh entirely for demo or fully-manual weeks. Otherwise the
+    // simulated scores get walked over by whatever ESPN currently returns —
+    // which is what was causing "demo resets after a few seconds."
+    if (week.dataSourceMode === 'demo' || week.dataSourceMode === 'manual') return;
+    await doRefreshScores(week,getGames(week.weekId));
+    renderDashboard();
   },autoRefreshInterval*1000);
 }
 
 async function doRefreshScores(week,games) {
+  // Only ask ESPN about games that came FROM ESPN. Manual/demo games keep
+  // whatever the commissioner set — refreshing them would clobber simulated
+  // state. (We already skip the whole week above when it's demo/manual, this
+  // is a per-game belt-and-suspenders guard for mixed slates.)
+  const refreshable = games.filter(g => g.espnEventId && g.dataSource !== 'manual' && g.dataSource !== 'demo');
+  if (!refreshable.length) return;
   const{updated,errors}=await refreshScoresByEventIds(
-    games.map(g=>g.espnEventId).filter(Boolean),games
+    refreshable.map(g=>g.espnEventId).filter(Boolean), refreshable
   );
   for(const upd of updated){
     const stored=getGame(upd.gameId);
@@ -3250,6 +3569,20 @@ function spreadFromGame(game) {
 
 /** Team display "School (Mascot)" — uses explicit mascot or TEAM_MASCOT_LOOKUP fallback. */
 function td(game, side='home') { return getTeamDisplay(game, side); }
+
+/** Just the school name (no mascot) — used in dashboard matrix + alma mater watch
+ *  where the mascot adds visual noise without clarifying anything. */
+function teamSchool(game, side='home') {
+  if (!game) return '';
+  return (side === 'home' ? game.homeTeam : game.awayTeam) || '';
+}
+
+/** Bare-matchup "Away @ Home" using just school names. */
+function matchupBare(game) {
+  if (!game) return '';
+  const sep = game.neutralSite ? 'vs' : '@';
+  return `${teamSchool(game,'away')} ${sep} ${teamSchool(game,'home')}`;
+}
 
 /**
  * Render a game as "Away @ Home" (CFB convention — @ reads "at").

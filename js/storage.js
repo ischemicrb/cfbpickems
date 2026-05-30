@@ -33,6 +33,7 @@ const KEYS = {
   LOCK_OVR:    'cfbp_lock_overrides',
   TB_GUESSES:  'cfbp_tiebreaker_guesses',
   REJECTED_SUGG: 'cfbp_rejected_suggestions',  // per-week dismissed suggested games
+  REACTIONS:   'cfbp_reactions',                // per-week game emoji reactions
   ACTIVE_WEEK: 'cfbp_active_week',
   FETCH_PROOF: 'cfbp_fetch_proof',
   SITE_UNLOCK: SITE_PIN_KEY,  // 'cfbp_site_unlocked'
@@ -95,6 +96,7 @@ export function ensureSeedData() {
   if(!load(KEYS.LOCK_OVR))    save(KEYS.LOCK_OVR,   {});
   if(!load(KEYS.TB_GUESSES))  save(KEYS.TB_GUESSES, {});
   if(!load(KEYS.REJECTED_SUGG)) save(KEYS.REJECTED_SUGG, {});
+  if(!load(KEYS.REACTIONS))   save(KEYS.REACTIONS,   {});
   if(!load(KEYS.ACTIVE_WEEK)) save(KEYS.ACTIVE_WEEK, REAL_WEEK_1_2026.weekId);
 }
 
@@ -111,6 +113,7 @@ export function resetToDemo() {
   save(KEYS.LOCK_OVR,   {});
   save(KEYS.TB_GUESSES, {});
   save(KEYS.REJECTED_SUGG, {});
+  save(KEYS.REACTIONS, {});
   save(KEYS.ACTIVE_WEEK, REAL_WEEK_1_2026.weekId);
   save(KEYS.FETCH_PROOF, null);
   clearSession();
@@ -373,6 +376,47 @@ export function isSuggestionRejected(weekId, game){
   return getRejectedSuggestions(weekId).includes(suggestionKeyOf(game));
 }
 
+// ─── EMOJI REACTIONS ──────────────────────────────────────────────────────────
+// Storage shape: { weekId: { gameId: { emoji: [playerId, ...] } } }
+// Each player can add multiple emojis to one game; toggling the same emoji
+// twice removes their vote. Reactions auto-sync to the Sheet in shared mode
+// (they go through load()/save() like everything else).
+
+function _reactionsAll() { return load(KEYS.REACTIONS) || {}; }
+function _saveReactions(all) { save(KEYS.REACTIONS, all); }
+
+/** Returns { emoji: [playerId, …] } for one game (empty object when none). */
+export function getReactionsForGame(weekId, gameId) {
+  const all = _reactionsAll();
+  return (all[weekId] && all[weekId][gameId]) || {};
+}
+
+/** Toggle a player's reaction. Returns the new list for that emoji on that game. */
+export function toggleReaction(weekId, gameId, emoji, playerId) {
+  if (!weekId || !gameId || !emoji || !playerId) return [];
+  const all = _reactionsAll();
+  if (!all[weekId]) all[weekId] = {};
+  if (!all[weekId][gameId]) all[weekId][gameId] = {};
+  const current = new Set(all[weekId][gameId][emoji] || []);
+  if (current.has(playerId)) current.delete(playerId);
+  else current.add(playerId);
+  if (current.size === 0) {
+    delete all[weekId][gameId][emoji];
+    if (!Object.keys(all[weekId][gameId]).length) delete all[weekId][gameId];
+    if (!Object.keys(all[weekId]).length) delete all[weekId];
+  } else {
+    all[weekId][gameId][emoji] = [...current];
+  }
+  _saveReactions(all);
+  return all[weekId]?.[gameId]?.[emoji] || [];
+}
+
+/** Wipe all reactions for a week (used by week-reset). */
+export function clearReactionsForWeek(weekId) {
+  const all = _reactionsAll();
+  if (all[weekId]) { delete all[weekId]; _saveReactions(all); }
+}
+
 // ─── PICKS ────────────────────────────────────────────────────────────────────
 
 export function getPicks(weekId=null,playerId=null){
@@ -455,6 +499,8 @@ export function resetCurrentWeekData(weekId) {
   const allTb = load(KEYS.TB_GUESSES) || {};
   Object.keys(allTb).forEach(k => { if(k.startsWith(weekId+'__')) delete allTb[k]; });
   save(KEYS.TB_GUESSES, allTb);
+  // Remove emoji reactions for this week
+  clearReactionsForWeek(weekId);
 }
 
 // ─── EXPORT ───────────────────────────────────────────────────────────────────

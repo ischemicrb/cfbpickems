@@ -262,26 +262,16 @@ export const REAL_WEEK_1_2026 = {
   lockedAt:null, finalizedAt:null,
 };
 
-export const REAL_WEEK_1_2026_KNOWN_GAMES = [
-  {
-    gameId:'g2026_1', weekId:'w2026_1', espnEventId:null,
-    dataQuality: DATA_QUALITY.PARTIAL, dataSource:'proposed',
-    homeTeam:'TCU', awayTeam:'North Carolina',
-    homeMascot:'Horned Frogs', awayMascot:'Tar Heels',
-    homeConference:'Big 12', awayConference:'ACC',
-    homeRank:null, awayRank:null,
-    kickoff:'2026-08-29T12:00:00Z',
-    kickoffConfirmed:false, kickoffDateOnly:true,
-    timeWindow:'morning',
-    spread:-6.5, favorite:'TCU',
-    spreadSource:'manual', oddsProvider:null,
-    lockedSpread:null, homeScore:null, awayScore:null,
-    status:'scheduled', actualWinner:null, atsWinner:null,
-    isAlmaMaterGame:false,
-    venue:'Aviva Stadium', venueDisplay:'Dublin, Ireland', neutralSite:true,
-    lastUpdated:null,
-  },
-];
+/**
+ * Real Week 1 starts with NO games on the slate. The Commissioner pulls games
+ * from ESPN (or adds manually) — nothing is auto-proposed.
+ *
+ * Previously this seeded a single TCU vs North Carolina game as a placeholder;
+ * that was confusing because it showed up automatically every time someone
+ * factory-reset. Now it's empty by design; if a user wants a starting slate,
+ * they pull from ESPN's Available Games pool and pick from there.
+ */
+export const REAL_WEEK_1_2026_KNOWN_GAMES = [];
 
 // ─── DEMO WEEK ────────────────────────────────────────────────────────────────
 

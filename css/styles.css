@@ -113,7 +113,10 @@ h4{font-size:.9rem;text-transform:uppercase;letter-spacing:.08em}
 .time-window-label{font-family:'Oswald',sans-serif;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin:16px 0 8px}
 /* Matchup */
 .matchup{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin-bottom:10px}
-.team{display:flex;flex-direction:column;gap:2px}.team.home{text-align:right}.team.away{text-align:left}
+/* Center team names so the @ separator is the visual anchor — easier to tap
+   on mobile, and looks balanced. Previously names hugged the outer edges
+   which felt off-center and could push longer names to ellipsis. */
+.team{display:flex;flex-direction:column;gap:2px;text-align:center;min-width:0}
 .team-rank{font-size:.7rem;color:var(--gold);font-weight:700;font-family:'Oswald',sans-serif}
 .team-name{font-family:'Oswald',sans-serif;font-size:1.05rem;font-weight:600;color:var(--text-primary);line-height:1.2}
 .team-conf{font-size:.7rem;color:var(--text-muted)}
@@ -149,7 +152,7 @@ h4{font-size:.9rem;text-transform:uppercase;letter-spacing:.08em}
 .dq-unavailable{background:var(--loss-bg);color:var(--loss);border:1px solid rgba(185,28,28,.3)}
 /* Pick buttons */
 .pick-buttons{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
-.pick-btn{padding:12px 8px;border-radius:var(--btn-radius);border:2px solid var(--border);background:var(--bg-card-alt);color:var(--text-secondary);font-family:'Oswald',sans-serif;font-size:.9rem;font-weight:600;cursor:pointer;transition:all var(--transition);text-align:center;line-height:1.2;min-height:48px;-webkit-tap-highlight-color:transparent}
+.pick-btn{padding:14px 10px;border-radius:var(--btn-radius);border:2px solid var(--border);background:var(--bg-card-alt);color:var(--text-secondary);font-family:'Oswald',sans-serif;font-size:.92rem;font-weight:600;cursor:pointer;transition:all var(--transition);text-align:center;line-height:1.25;min-height:56px;-webkit-tap-highlight-color:transparent;word-break:break-word}
 .pick-btn:active:not(:disabled){transform:scale(.97)}
 .pick-btn.selected{border-color:var(--maroon);background:var(--maroon-pale);color:var(--maroon)}
 .pick-btn.locked-win{border-color:var(--win);background:var(--win-bg);color:var(--win)}
@@ -435,36 +438,46 @@ label[for="week-show-history"],label:has(#week-show-history){
 .pick-cell.result-win  .pick-icon{color:var(--win,#1a7a3f)}
 .pick-cell.result-loss .pick-icon{color:var(--loss,#b91c1c)}
 
-/* Small pulsing dot used in live pills and live cells */
+/* Small pulsing dot used in live pills and live cells (maroon-themed) */
 .live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;
-  background:#e0a020;margin-right:5px;vertical-align:middle;
+  background:var(--maroon-light);margin-right:5px;vertical-align:middle;
   animation:live-dot-pulse 1.6s ease-in-out infinite}
 @keyframes live-dot-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.78)}}
 
-/* Calm "LIVE 14–10" pill (replaces the loud 🔴) */
-.live-pill{display:inline-flex;align-items:center;color:#9a6a00;
-  background:rgba(224,160,32,.12);border:1px solid rgba(224,160,32,.35);
+/* Calm "LIVE 14–10" pill — maroon tonal, matches the app's brand palette
+   instead of clashing amber/blue. */
+.live-pill{display:inline-flex;align-items:center;color:var(--maroon-mid);
+  background:var(--maroon-pale);border:1px solid var(--maroon-tint);
   padding:1px 8px;border-radius:20px;font-weight:600;font-family:'Oswald',sans-serif;
   letter-spacing:.03em;white-space:nowrap}
 
-/* Live pick cells — soft tints, gentle breathing animation, direction arrow.
-   COVERING = amber/gold (warm, "you're winning the bet"),
-   TRAILING = slate/blue-grey (cool, "you're behind") — intentionally NOT red,
-   so it can never be confused with a finalized LOSS box. */
+/* Live pick cells — tentative covering/trailing states.
+   v14 rework: light green tint for currently-covering, light red tint for
+   currently-trailing. The same colour FAMILY as final win/loss boxes (so the
+   intuition carries), but with low-opacity backgrounds + pulsing animation +
+   directional arrows to mark them as TENTATIVE not confirmed. Finalized cells
+   keep the bold solid green/red boxes, which now read as clearly "decided"
+   vs these subtle pulsing tints. */
 .pick-cell.pick-live{font-weight:600}
 .pick-cell.pick-live-covering{
-  background:rgba(224,160,32,.14);color:#7a5200;
-  animation:live-cell-breathe-warm 2s ease-in-out infinite}
+  background:rgba(26,122,63,.10);color:#1A7A3F;
+  animation:live-cell-breathe-cov 2s ease-in-out infinite}
 .pick-cell.pick-live-trailing{
-  background:rgba(90,110,140,.14);color:#3d4d63;
-  animation:live-cell-breathe-cool 2s ease-in-out infinite}
+  background:rgba(185,28,28,.08);color:#9a3030;
+  animation:live-cell-breathe-trail 2s ease-in-out infinite}
 .pick-cell.pick-live-even{
-  background:rgba(122,106,90,.12);color:#5b5043}
+  background:rgba(122,106,90,.10);color:var(--text-secondary)}
 .live-arrow{margin-left:5px;font-size:.78rem;font-weight:700}
-.pick-cell.pick-live-covering .live-arrow{color:#c98a00}
-.pick-cell.pick-live-trailing .live-arrow{color:#6a7c93}
-@keyframes live-cell-breathe-warm{0%,100%{background:rgba(224,160,32,.10)}50%{background:rgba(224,160,32,.22)}}
-@keyframes live-cell-breathe-cool{0%,100%{background:rgba(90,110,140,.10)}50%{background:rgba(90,110,140,.22)}}
+.pick-cell.pick-live-covering .live-arrow{color:var(--win)}
+.pick-cell.pick-live-trailing .live-arrow{color:var(--loss)}
+@keyframes live-cell-breathe-cov{0%,100%{background:rgba(26,122,63,.07)}50%{background:rgba(26,122,63,.18)}}
+@keyframes live-cell-breathe-trail{0%,100%{background:rgba(185,28,28,.05)}50%{background:rgba(185,28,28,.15)}}
+
+/* Make sure FINAL cells stay BOLD and unmistakable — solid backgrounds, no
+   pulse, no opacity. The contrast with the pulsing tentative cells above is
+   what makes "decided vs in-progress" obvious at a glance. */
+.pick-cell.result-win{background:var(--win-bg);color:var(--win);font-weight:700}
+.pick-cell.result-loss{background:var(--loss-bg);color:var(--loss);font-weight:700}
 
 /* Respect reduced-motion preferences — drop animations, keep the color cues */
 @media (prefers-reduced-motion: reduce){
@@ -588,3 +601,144 @@ label[for="week-show-history"],label:has(#week-show-history){
 .avail-group:not([open]) .avail-group-header::before{transform:rotate(-90deg)}
 .avail-group-header:hover{color:var(--maroon)}
 .avail-group-body{padding:8px}
+
+/* Tiebreaker privacy marker — *** shown to viewers who haven't earned the right
+   to see another player's guess yet. Same letter-spacing as a PIN field so it
+   reads as "hidden value" rather than "no value". */
+.tb-hidden{font-family:'Courier New',monospace;letter-spacing:.2em;color:var(--text-muted);font-weight:600}
+
+/* Subtle ESPN gamecast link inside the dashboard row meta */
+.espn-link{font-size:.66rem;color:var(--text-muted);text-decoration:none;border-bottom:1px dotted var(--text-muted);padding-bottom:0;letter-spacing:.04em}
+.espn-link:hover{color:var(--maroon);border-bottom-color:var(--maroon)}
+
+/* Cloud-sync explainer panel — surfaces what auto-syncs vs. doesn't, plus live stats */
+.sync-status-panel{background:var(--maroon-pale);border:1px solid var(--maroon-tint);
+  border-radius:8px;padding:12px 14px;margin-bottom:14px}
+.sync-explainer{margin:0 0 10px 0;padding-left:18px;font-size:.78rem;line-height:1.45;color:var(--text-secondary)}
+.sync-explainer li{margin-bottom:4px}
+.sync-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px 14px;
+  background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:8px 10px;
+  font-size:.78rem}
+.sync-stats > div{display:flex;flex-direction:column;gap:1px}
+.sync-stats strong{color:var(--text-primary);font-weight:600}
+
+/* ── v14: Mobile responsiveness pass ──────────────────────────────────────────
+   Goal: zero accidental horizontal scroll on iPhone; everything fits within the
+   viewport. Wide tables (.dashboard-scroll, .batch-grid-scroll) intentionally
+   keep their own internal scroll containers — only the OUTER page should never
+   scroll sideways. */
+
+/* Enforce border-box everywhere so padding never pushes elements past their
+   parent's width. Combined with the existing body overflow-x:hidden, this is
+   the foundation for "no surprise horizontal scroll." */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Belt-and-suspenders: prevent any descendant from forcing the wrapper wider
+   than the viewport. */
+.page-wrapper { overflow-x: hidden; max-width: 100vw; }
+.main-content { overflow-x: hidden; }
+
+/* Narrow viewports — tighten page padding so 12+content+12 fits an iPhone SE
+   width (375px) without bleeding past. */
+@media (max-width: 480px) {
+  :root { --page-pad: 12px; }
+  .app-header-inner { gap: 8px; padding: 10px var(--page-pad); }
+  .app-logo-text { font-size: 1.05rem; }
+  .app-logo-icon { width: 30px; height: 30px; font-size: 17px; }
+  /* Header right-side: PT/MT/CT/ET + theme dropdown + sync badge + meta were
+     fighting for horizontal space. Allow them to wrap onto a second line on
+     phones; on desktop they stay inline. */
+  .header-right { flex-wrap: wrap; justify-content: flex-end; gap: 6px; row-gap: 4px; }
+  .header-meta { font-size: .65rem; }
+  /* Pick buttons: thumb-friendly without overflowing. */
+  .pick-btn { min-height: 52px; padding: 12px 8px; font-size: .88rem; }
+  /* Modal: full width on phones. */
+  .modal { padding: 20px var(--page-pad); }
+  /* Player admin row: stack to single column on phones. */
+  .player-admin-controls { flex-direction: column; align-items: stretch; }
+  .player-admin-field { flex-direction: column; }
+  .pin-input, .email-input { width: 100%; }
+  /* Available-games filter bar: each control on its own line. */
+  .avail-filter-label { min-width: 100%; }
+  /* Toasts: edge-to-edge with consistent inset. */
+  #toast-container { left: 8px; right: 8px; top: 70px; }
+  /* Section cards: tighter inner padding. */
+  .card { padding: 12px; }
+  /* Bottom nav: trim font so 5 tabs fit comfortably. */
+  .nav-item { font-size: .62rem; }
+  .nav-icon { font-size: 1.1rem; }
+  /* Sync stats — go single-column. */
+  .sync-stats { grid-template-columns: 1fr; }
+}
+
+/* Very narrow (under 360px — older iPhone SE / mini) */
+@media (max-width: 360px) {
+  :root { --page-pad: 10px; }
+  .app-logo-text { font-size: .95rem; }
+  .header-meta { display: none; }
+  .nav-item span:last-child { font-size: .58rem; }
+}
+
+/* ── v14: Dashboard layout toggle (Standard / Compact) ─────────────────────── */
+.card-header-row{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.layout-toggle{display:inline-flex;background:var(--bg-input);border-radius:6px;padding:2px;gap:0}
+.layout-toggle-btn{background:transparent;border:none;padding:5px 12px;font-size:.72rem;font-family:'Oswald',sans-serif;
+  font-weight:600;letter-spacing:.04em;color:var(--text-muted);cursor:pointer;border-radius:4px;transition:all var(--transition)}
+.layout-toggle-btn.active{background:var(--maroon);color:#fff}
+.layout-toggle-btn:hover:not(.active){color:var(--maroon)}
+
+/* Compact dashboard — one stacked card per game, player picks in initial-chips */
+.dashboard-compact{display:flex;flex-direction:column;gap:8px}
+.dc-game{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.dc-game-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;justify-content:space-between;margin-bottom:8px}
+.dc-matchup{font-family:'Oswald',sans-serif;font-weight:700;font-size:.92rem;color:var(--text-primary);min-width:0}
+.dc-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:.7rem;color:var(--text-muted)}
+.dc-status{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:10px;font-weight:600;font-family:'Oswald',sans-serif;letter-spacing:.03em}
+.dc-status.dc-final{background:var(--bg-input);color:var(--text-secondary)}
+.dc-status.dc-live{background:var(--maroon-pale);color:var(--maroon-mid);border:1px solid var(--maroon-tint)}
+.dc-status.dc-scheduled{background:transparent;color:var(--text-muted)}
+
+/* Player chips inside a compact game card */
+.dc-chips{display:flex;flex-wrap:wrap;gap:6px}
+.dc-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:14px;font-size:.72rem;
+  font-family:'Oswald',sans-serif;font-weight:600;border:1px solid var(--border);background:var(--bg-input);
+  color:var(--text-secondary);line-height:1;white-space:nowrap;cursor:default}
+.dc-chip-init{background:var(--maroon);color:#fff;width:18px;height:18px;border-radius:50%;display:inline-flex;
+  align-items:center;justify-content:center;font-size:.62rem;letter-spacing:.02em}
+.dc-chip-pick{letter-spacing:.02em}
+/* Decided states — bold colours, mirror the matrix */
+.dc-chip-win{background:var(--win-bg);border-color:rgba(26,122,63,.35);color:var(--win)}
+.dc-chip-win .dc-chip-init{background:var(--win)}
+.dc-chip-loss{background:var(--loss-bg);border-color:rgba(185,28,28,.35);color:var(--loss)}
+.dc-chip-loss .dc-chip-init{background:var(--loss)}
+.dc-chip-nd{background:var(--nd-bg);color:var(--nd)}
+/* Live tentative — same light tints as the matrix, gentle pulse */
+.dc-chip-live-covering{background:rgba(26,122,63,.10);color:#1A7A3F;animation:live-cell-breathe-cov 2s ease-in-out infinite}
+.dc-chip-live-covering .dc-chip-init{background:var(--win)}
+.dc-chip-live-trailing{background:rgba(185,28,28,.08);color:#9a3030;animation:live-cell-breathe-trail 2s ease-in-out infinite}
+.dc-chip-live-trailing .dc-chip-init{background:var(--loss)}
+.dc-chip-live{background:var(--maroon-pale);color:var(--maroon-mid)}
+.dc-chip-none{opacity:.5}
+@media (prefers-reduced-motion: reduce){
+  .dc-chip-live-covering,.dc-chip-live-trailing{animation:none}
+}
+
+/* ── v14: Emoji reactions on dashboard games ──────────────────────────────── */
+.reaction-strip{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;position:relative}
+.reaction-chip{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:12px;
+  background:var(--bg-input);border:1px solid var(--border);cursor:pointer;font-size:.72rem;
+  font-family:'Oswald',sans-serif;color:var(--text-secondary);line-height:1;transition:all var(--transition)}
+.reaction-chip:hover{border-color:var(--maroon-light);background:var(--maroon-pale)}
+.reaction-chip-mine{background:var(--maroon-pale);border-color:var(--maroon-light);color:var(--maroon)}
+.reaction-chip-emoji{font-size:.85rem;line-height:1}
+.reaction-chip-count{font-weight:600;font-size:.7rem}
+.reaction-add-btn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
+  border-radius:50%;border:1px dashed var(--border);background:transparent;color:var(--text-muted);
+  cursor:pointer;font-size:.85rem;line-height:1;padding:0;font-weight:600;transition:all var(--transition)}
+.reaction-add-btn:hover{border-color:var(--maroon);color:var(--maroon);background:var(--maroon-pale)}
+.reaction-picker{position:absolute;top:100%;left:0;margin-top:4px;background:var(--bg-card);
+  border:1px solid var(--border);border-radius:8px;padding:4px;display:flex;gap:2px;
+  box-shadow:var(--shadow-card);z-index:50}
+.reaction-pick-option{background:transparent;border:none;cursor:pointer;font-size:1.1rem;padding:4px 6px;
+  border-radius:6px;line-height:1;transition:background var(--transition)}
+.reaction-pick-option:hover{background:var(--bg-input)}

@@ -294,8 +294,8 @@ function parseAndReport(events, espnUrl, method, startDate, endDate) {
 
     const homeRank = safeRank(home.curatedRank?.current);
     const awayRank = safeRank(away.curatedRank?.current);
-    const homeConf = home.team?.conference?.abbreviation || home.team?.conference?.name || '';
-    const awayConf = away.team?.conference?.abbreviation || away.team?.conference?.name || '';
+    const homeConf = extractConf(home.team);
+    const awayConf = extractConf(away.team);
 
     const { spread, favorite, spreadSource, oddsProvider } = extractSpread(comp, homeTeam, awayTeam);
     if (spread !== null) withSpread++; else withoutSpread++;
@@ -401,6 +401,37 @@ function normalizeStatus(name) {
   if (name.includes('FINAL')) return GAME_STATUS.FINAL;
   if (name === 'STATUS_IN_PROGRESS' || name.includes('HALFTIME') || name.includes('END_PERIOD')) return GAME_STATUS.LIVE;
   return GAME_STATUS.SCHEDULED;
+}
+
+// ESPN conference ID → human name. The lightweight scoreboard payload doesn't
+// include conference.name on team objects (only conferenceId), so we map them
+// here. IDs are stable in the ESPN API. If a new conference appears, add it
+// below; unmapped IDs fall through to the empty-string fallback in extractConf.
+const ESPN_CONFERENCE_BY_ID = {
+  1: 'AAC',                  // American (some payloads)
+  4: 'Big 12',
+  5: 'ACC',
+  7: 'Big Ten',
+  8: 'SEC',
+  9: 'Pac-12',
+  12: 'Conference USA',
+  15: 'MAC',
+  17: 'Mountain West',
+  18: 'FBS Independents',
+  37: 'Sun Belt',
+  151: 'AAC',                // American Athletic (current id seen in recent payloads)
+  // FCS / lower divisions get rendered as their abbreviation when present
+};
+
+function extractConf(teamObj) {
+  if (!teamObj) return '';
+  // Prefer explicit name on the team object when present
+  const direct = teamObj.conference?.abbreviation || teamObj.conference?.name || teamObj.conferenceShortName || teamObj.conferenceName;
+  if (direct) return direct;
+  // Fall back to mapped conferenceId (most scoreboard payloads only have this)
+  const id = teamObj.conferenceId;
+  if (id != null && ESPN_CONFERENCE_BY_ID[Number(id)]) return ESPN_CONFERENCE_BY_ID[Number(id)];
+  return '';
 }
 
 function extractSpread(comp, homeTeam, awayTeam) {

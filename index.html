@@ -18,7 +18,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="icon" type="image/x-icon" href="favicon.ico" />
-  <link rel="stylesheet" href="css/styles.css?v=13a" />
+  <link rel="stylesheet" href="css/styles.css?v=14" />
 </head>
 <body>
 
@@ -81,11 +81,11 @@
     <button class="nav-item" data-tab="leaderboard">
       <span class="nav-icon">🏆</span><span>Standings</span>
     </button>
-    <button class="nav-item" data-tab="commissioner">
-      <span class="nav-icon">⚙️</span><span>Comm.</span>
-    </button>
     <button class="nav-item" data-tab="rules">
       <span class="nav-icon">📋</span><span>Rules</span>
+    </button>
+    <button class="nav-item" data-tab="commissioner">
+      <span class="nav-icon">⚙️</span><span>Comm.</span>
     </button>
   </nav>
 
@@ -94,14 +94,14 @@
 <div id="toast-container"></div>
 
 <!-- Cache-bust the main entry script so a stale browser cache can't serve v9 app.js. -->
-<script type="module" src="js/app.js?v=13a"></script>
+<script type="module" src="js/app.js?v=14"></script>
 <script>
   // Service worker registration + auto-update.
   // When a new SW takes over (e.g. v10 replacing v9), force a one-time reload
   // so the user sees the new code instead of the cached v9 shell.
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('service-worker.js?v=13a')
+      navigator.serviceWorker.register('service-worker.js?v=14')
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
           // If there's already a waiting worker, tell it to activate now.
