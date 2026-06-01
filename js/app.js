@@ -1,16 +1,12 @@
 /**
- * CFB Pickems — App Controller v10
+ * CFB Pickems — App Controller v15
  *
- * Changes (v10):
- *  - Dashboard now renders "All Picks by Game" matrix (was missing in v9)
- *  - Dashboard section order: All Picks by Game → Alma Mater Watch → This Week
- *  - Team display: "School (Mascot)" everywhere via getTeamDisplay()
- *  - Spread display always shows favored team (derives from sign+game when needed)
- *  - showGameModal includes Home Mascot / Away Mascot inputs
- *  - Game-add isAlma check uses getAlmaMaterMatch (not raw substring)
- *  - Expanded export: full backup JSON + per-week CSV bundle (multiple sheets)
- *  - Dashboard reachable without login when week is live/final
+ * One-stop place to update the user-visible version string + release date.
+ * Surfaced in the footer of the Rules tab (Priority 12).
  */
+export const APP_VERSION = 'v0.15';
+export const APP_VERSION_DATE = '2026-05-31';
+
 
 import {
   WEEK_STATUS, GAME_STATUS, PICK_RESULT, TIME_WINDOW, TIME_ZONES, DEFAULT_TZ,
@@ -44,6 +40,7 @@ import {
   getRejectedSuggestions, rejectSuggestion, unrejectSuggestion,
   clearRejectedSuggestions, isSuggestionRejected, suggestionKeyOf,
   getReactionsForGame, toggleReaction,
+  getFeedback, appendFeedback,
   countPicksForGame, deletePicksForGame,
   saveFetchProof, getFetchProof,
   getTimezone, setTimezone,
@@ -128,11 +125,19 @@ async function boot() {
   if (!getSettings().dashboardLayout && typeof window !== 'undefined' && window.innerWidth && window.innerWidth < 600) {
     saveSetting('dashboardLayout', 'compact');
   }
-  if (!isSiteUnlocked()) { showSitePinGate(); return; }
+  if (!isSiteUnlocked()) { showSitePinGate(); revealApp(); return; }
   navigateTo('dashboard');
+  revealApp();
 
   // Best-effort flush of any queued writes before the tab closes.
   window.addEventListener('beforeunload', () => { try { flushPush(); } catch {} });
+}
+
+/** Remove the boot-time visibility lock once the first screen has rendered.
+ *  Prevents the maroon header from flashing before the PIN gate appears. */
+function revealApp() {
+  // Defer one tick so the DOM has actually painted the new layout first.
+  requestAnimationFrame(() => document.body.classList.remove('cfbp-booting'));
 }
 
 function updateSyncBadge(status) {
@@ -308,6 +313,10 @@ function renderPicksPage() {
       <span class="text-muted text-sm"> — make your picks</span></div>
       <button class="btn btn-ghost btn-sm" id="logout-btn">Log Out</button>
     </div>
+    <div class="flex-between mb-sm randomize-row">
+      <span class="text-muted text-xs">Need a quick start? Randomize then edit anything you want to change.</span>
+      <button class="btn btn-ghost btn-sm" id="randomize-picks-btn" title="Randomly pick a team for each game">🎲 Randomize My Picks</button>
+    </div>
     <div id="games-list"></div>
     ${renderTiebreakerInput(week)}
     <div class="submit-bar">
@@ -319,6 +328,25 @@ function renderPicksPage() {
   document.getElementById('tb-input')?.addEventListener('input', e => {
     state.draftTiebreaker = e.target.value !== '' ? parseFloat(e.target.value) : null;
     updateSubmitEnabled(games, week);
+  });
+  // Priority 8: Randomize-my-picks button. Operates only on games still
+  // pickable (skips locked/live/final), so it can be safely re-clicked late
+  // in the week without overwriting already-decided picks the player can't
+  // change anyway. Picks are written into `state.draftPicks` (not submitted)
+  // so the player can still review/edit before hitting Submit.
+  document.getElementById('randomize-picks-btn')?.addEventListener('click', () => {
+    const pickable = games.filter(isGamePickable);
+    if (!pickable.length) { showToast('No games are still open to pick','warning'); return; }
+    // Math.random() is fine here — not seeded by player ID or any deterministic
+    // input, so every click produces a fresh selection.
+    pickable.forEach(g => {
+      const pickHome = Math.random() < 0.5;
+      state.draftPicks[g.gameId] = pickHome ? g.homeTeam : g.awayTeam;
+    });
+    renderGamesList(games, week);
+    bindPickButtons(games, week);
+    updateSubmitEnabled(games, week);
+    showToast(`🎲 Randomized ${pickable.length} pick${pickable.length>1?'s':''} — review and submit when ready`, 'success');
   });
   renderGamesList(games, week);
   bindPickButtons(games, week);
@@ -793,11 +821,7 @@ function renderDashboard() {
     <!-- 2. ALMA MATER WATCH -->
     ${renderAlmaMaterWatch(week.weekId, games)}
 
-    <!-- 3. THIS WEEK SCORE SUMMARY -->
-    ${week.tiebreakerQuestion?`<div class="tiebreaker-card tiebreaker-dashboard">
-      <span class="tiebreaker-label">🎯 Tiebreaker: ${escHtml(week.tiebreakerQuestion)}</span>
-      ${actualTB!==null?`<div class="tb-actual">Actual: <strong>${actualTB}</strong></div>`:'<div class="text-muted text-xs">Actual answer not entered yet.</div>'}
-    </div>`:''}
+    <!-- 3. THIS WEEK SCORE SUMMARY (tiebreaker question card now appears below this) -->
     <div class="card mb-md">
       <div class="card-header"><span class="card-title">This Week Score Summary</span></div>
       <table class="leaderboard-table">
@@ -831,6 +855,12 @@ function renderDashboard() {
         </tbody>
       </table>
     </div>
+
+    <!-- 4. TIEBREAKER QUESTION (moved below summary per Priority 11) -->
+    ${week.tiebreakerQuestion?`<div class="tiebreaker-card tiebreaker-dashboard">
+      <span class="tiebreaker-label">🎯 Tiebreaker: ${escHtml(week.tiebreakerQuestion)}</span>
+      ${actualTB!==null?`<div class="tb-actual">Actual: <strong>${actualTB}</strong></div>`:'<div class="text-muted text-xs">Actual answer not entered yet.</div>'}
+    </div>`:''}
 `;
 
   document.getElementById('week-selector')?.addEventListener('change',e=>{state.dashboardWeekId=e.target.value;renderDashboard();});
@@ -844,10 +874,167 @@ function renderDashboard() {
   });
   // Wire up reaction chips + "+" pickers in whichever view is rendered
   bindReactionHandlers(players);
+  // Priority 7: column reorder (drag-and-drop) for both matrix and compact.
+  bindColumnReorderHandlers();
   document.getElementById('manual-refresh-btn')?.addEventListener('click',async()=>{
     showToast('🔄 Refreshing…','warning');
     await doRefreshScores(week,games); renderDashboard();
   });
+}
+
+/**
+ * Priority 7: drag-to-reorder player columns / chips.
+ *
+ * Implementation:
+ *  - Desktop: native HTML5 drag-and-drop (`dragstart` / `dragover` / `drop`).
+ *    The browser's drag image gives clear feedback; touch is unaffected.
+ *  - Mobile / touch: HTML5 drag doesn't fire from touch on iOS Safari. We add
+ *    a LONG-PRESS gate: 350ms of holding still on a chip enters "reorder mode"
+ *    (small haptic-style scale animation), then subsequent finger movement
+ *    drags. A simple finger swipe to scroll never crosses the 350ms threshold
+ *    and so never triggers reorder. Releasing without crossing the threshold
+ *    is a no-op (the chip's normal title-tooltip still fires).
+ *
+ * Persisted: settings.dashboardColumnOrder = [playerId, …]. Re-renders dashboard
+ * after a successful reorder so the chips/cells fall into the new positions
+ * everywhere consistently.
+ */
+function bindColumnReorderHandlers() {
+  // Use ANY draggable element with data-player-id as a reorder target. Both
+  // matrix headers (.player-col) and compact chips (.dc-chip) qualify.
+  const draggables = document.querySelectorAll('[data-player-id][draggable="true"]');
+  if (!draggables.length) return;
+
+  // ─ Desktop drag-and-drop ─
+  let dragSourceId = null;
+  draggables.forEach(el => {
+    if (el._dragWired) return; el._dragWired = true;
+
+    el.addEventListener('dragstart', (e) => {
+      dragSourceId = el.dataset.playerId;
+      el.classList.add('col-dragging');
+      // dataTransfer is required for Firefox to start a drag
+      try { e.dataTransfer.setData('text/plain', dragSourceId); e.dataTransfer.effectAllowed = 'move'; } catch {}
+    });
+    el.addEventListener('dragend', () => {
+      el.classList.remove('col-dragging');
+      document.querySelectorAll('.col-drop-target').forEach(n => n.classList.remove('col-drop-target'));
+    });
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      el.classList.add('col-drop-target');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('col-drop-target'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      el.classList.remove('col-drop-target');
+      const targetId = el.dataset.playerId;
+      if (!dragSourceId || !targetId || dragSourceId === targetId) return;
+      reorderPlayerColumn(dragSourceId, targetId);
+    });
+  });
+
+  // ─ Touch (mobile) long-press → drag ─
+  let touchSrc = null;        // playerId of long-pressed source
+  let touchEl  = null;        // element being dragged
+  let touchTimer = null;
+  let touchStart = null;      // {x, y} screen coords of touchstart
+  const LONG_PRESS_MS = 350;
+  const SCROLL_THRESHOLD = 8; // pixels of pre-press movement that aborts the press
+
+  draggables.forEach(el => {
+    if (el._touchWired) return; el._touchWired = true;
+
+    el.addEventListener('touchstart', (e) => {
+      // Only respond to single-finger touches. Pinch-zoom etc. should be ignored.
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      touchStart = { x: t.clientX, y: t.clientY };
+      // Start the long-press timer. If the user moves before it fires, the
+      // 'touchmove' handler cancels it — preserving normal scroll behaviour.
+      touchTimer = setTimeout(() => {
+        touchSrc = el.dataset.playerId;
+        touchEl = el;
+        el.classList.add('col-dragging');
+        // Light haptic on supported devices to signal entry into reorder mode
+        if (navigator.vibrate) try { navigator.vibrate(15); } catch {}
+      }, LONG_PRESS_MS);
+    }, { passive: true });
+
+    el.addEventListener('touchmove', (e) => {
+      const t = e.touches[0];
+      if (!t) return;
+      // If we haven't entered reorder mode yet, treat any meaningful movement
+      // as a scroll intent — cancel the long-press timer so the page scrolls
+      // normally.
+      if (!touchSrc) {
+        if (touchStart) {
+          const dx = Math.abs(t.clientX - touchStart.x);
+          const dy = Math.abs(t.clientY - touchStart.y);
+          if (dx + dy > SCROLL_THRESHOLD) {
+            clearTimeout(touchTimer);
+            touchTimer = null;
+            touchStart = null;
+          }
+        }
+        return;
+      }
+      // We ARE in reorder mode. Highlight whichever draggable is currently
+      // under the finger, and prevent scroll while dragging.
+      e.preventDefault();
+      const under = document.elementFromPoint(t.clientX, t.clientY);
+      document.querySelectorAll('.col-drop-target').forEach(n => n.classList.remove('col-drop-target'));
+      const target = under?.closest('[data-player-id]');
+      if (target && target !== touchEl) target.classList.add('col-drop-target');
+    }, { passive: false });
+
+    el.addEventListener('touchend', (e) => {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+      if (!touchSrc) { touchStart = null; return; }
+      // Find what we ended on
+      const t = e.changedTouches[0];
+      const under = t ? document.elementFromPoint(t.clientX, t.clientY) : null;
+      const target = under?.closest('[data-player-id]');
+      const targetId = target?.dataset.playerId;
+      // Reset state
+      touchEl?.classList.remove('col-dragging');
+      document.querySelectorAll('.col-drop-target').forEach(n => n.classList.remove('col-drop-target'));
+      const src = touchSrc;
+      touchSrc = null; touchEl = null; touchStart = null;
+      // Commit if dropped on a different player's element
+      if (src && targetId && src !== targetId) reorderPlayerColumn(src, targetId);
+    });
+
+    el.addEventListener('touchcancel', () => {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+      touchEl?.classList.remove('col-dragging');
+      document.querySelectorAll('.col-drop-target').forEach(n => n.classList.remove('col-drop-target'));
+      touchSrc = null; touchEl = null; touchStart = null;
+    });
+  });
+}
+
+/** Move source player BEFORE target player in the saved column order, then re-render. */
+function reorderPlayerColumn(sourceId, targetId) {
+  // Build the current effective order (what the user sees) so the new order
+  // matches their mental model.
+  const session = getSession();
+  const players = getPlayers().filter(p => p.active);
+  const ordered = getOrderedPlayersForDashboard(players, session.playerId);
+  const ids = ordered.map(p => p.playerId);
+  const srcIdx = ids.indexOf(sourceId);
+  const tgtIdx = ids.indexOf(targetId);
+  if (srcIdx < 0 || tgtIdx < 0 || srcIdx === tgtIdx) return;
+  ids.splice(srcIdx, 1);
+  ids.splice(tgtIdx, 0, sourceId);
+  // The "viewer first" rule re-asserts on next render via
+  // getOrderedPlayersForDashboard, so we don't need to special-case the viewer
+  // here — saving the full ordering preserves the user's intent.
+  setDashboardColumnOrder(ids);
+  renderDashboard();
 }
 
 function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actualTB) {
@@ -872,8 +1059,10 @@ function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actual
     }
   }
 
-  const submitted=players.filter(p=>allPicks.some(pk=>pk.playerId===p.playerId));
-  if(!submitted.length) return'<p class="text-muted text-center" style="padding:24px">No picks submitted yet.</p>';
+  const submittedRaw = players.filter(p=>allPicks.some(pk=>pk.playerId===p.playerId));
+  if(!submittedRaw.length) return'<p class="text-muted text-center" style="padding:24px">No picks submitted yet.</p>';
+  // Priority 7: reorder columns per the viewer's saved layout (their own column first)
+  const submitted = getOrderedPlayersForDashboard(submittedRaw, session.playerId);
 
   const headers=submitted.map(p=>{
     const r=weeklyResults.find(r=>r.playerId===p.playerId);
@@ -883,7 +1072,13 @@ function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actual
     // so an all-pending week doesn't render a confusing "0-0" under every name.
     const decided=(r?.correctPicks||0)+(r?.incorrectPicks||0)+(r?.noDecisions||0);
     const recordLabel=decided>0?`<span class="pts-label">${w}–${l}</span>`:'';
-    return`<th class="player-col"><span class="player-col-name">${escHtml(name)}</span>${recordLabel}</th>`;
+    // data-player-id + draggable handle for Priority 7 reorder. The header
+    // itself is the drag target so users have a clear affordance (the column
+    // name). Hidden visual handle (≡) on hover makes it discoverable.
+    return`<th class="player-col" data-player-id="${escHtml(p.playerId)}" draggable="true">
+      <span class="col-drag-handle" aria-hidden="true">≡</span>
+      <span class="player-col-name">${escHtml(name)}</span>${recordLabel}
+    </th>`;
   }).join('');
 
   const rows=games.map(game=>{
@@ -954,7 +1149,14 @@ function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actual
 // in Sheets mode); UI is a small strip of chips per game with a "+" picker.
 // Only logged-in players can react. Tapping the same emoji removes the vote.
 
-const REACTION_PALETTE = ['😀','😭','🤡','🔥','😬','🫡'];
+// Reaction palette — expanded set (Priority 9). Order chosen to keep the most
+// commonly-used emojis (thumbs up/down, fire, laugh) early so they're easy to
+// hit without scrolling on mobile. The picker UI wraps when the palette is
+// wider than the popover, so adding more is safe.
+const REACTION_PALETTE = [
+  '👍','👎','🔥','😂','😁','😭','😬','🤡',
+  '🫡','🤘','🤙','☝️','🚀','🖕',
+];
 
 /**
  * Render the reactions strip for one game. Returns a span with chips for each
@@ -966,6 +1168,8 @@ function renderReactionStrip(weekId, gameId, players) {
   const session = getSession();
   const myPid = session?.playerId || null;
   const playerById = Object.fromEntries(players.map(p => [p.playerId, p.displayName]));
+
+  const hasAny = Object.values(reactions).some(arr => arr?.length);
 
   const chips = Object.entries(reactions).map(([emoji, pids]) => {
     if (!pids?.length) return '';
@@ -979,8 +1183,18 @@ function renderReactionStrip(weekId, gameId, players) {
     </button>`;
   }).join('');
 
-  // The "+" picker is only useful when there's a logged-in player to attribute
-  // the reaction to. Hide it for anonymous viewers.
+  // Priority 5: when there are NO reactions on a game, the strip should not
+  // take up vertical space. But a logged-in player still needs a way to start
+  // one — so we render a single tiny "+" with the `reaction-strip-empty`
+  // modifier (CSS shrinks it to zero margin-top and just a 16x16 button).
+  // Anonymous viewers see nothing at all when empty.
+  if (!hasAny) {
+    if (!myPid) return ''; // truly empty for anonymous viewers
+    return `<span class="reaction-strip reaction-strip-empty" data-reaction-strip="${escHtml(weekId)}::${escHtml(gameId)}">
+      <button type="button" class="reaction-add-btn reaction-add-btn-mini" data-week-id="${escHtml(weekId)}" data-game-id="${escHtml(gameId)}" title="Add reaction">+</button>
+    </span>`;
+  }
+
   const addBtn = myPid
     ? `<button type="button" class="reaction-add-btn" data-week-id="${escHtml(weekId)}" data-game-id="${escHtml(gameId)}" title="Add reaction">+</button>`
     : '';
@@ -1071,18 +1285,24 @@ function bindReactionHandlers(players) {
 function renderDashboardCompact(players, games, allPicks, weeklyResults, weekId, actualTB) {
   const session = getSession();
   const picks = allPicks;
-  const submitted = players.filter(p => picks.some(pk => pk.playerId === p.playerId));
+  const submittedRaw = players.filter(p => picks.some(pk => pk.playerId === p.playerId));
+  // Priority 7: same reorder rule as the matrix — viewer's column (here a chip
+  // position) is leftmost; rest follows the saved order.
+  const submitted = getOrderedPlayersForDashboard(submittedRaw, session.playerId);
   if (!games.length) return '<div class="info-box">No games on the slate yet.</div>';
 
-  // Short label = last word of the school name, capped at 4 chars
-  // (e.g. "Texas A&M" → "A&M", "North Carolina" → "Caro").
-  const shortLabel = (name) => {
-    if (!name) return '';
-    const last = name.split(/\s+/).pop() || name;
-    return last.length > 4 ? last.slice(0, 4) : last;
-  };
+  // Pre-compute a unique abbreviation for every team appearing this week so
+  // no two chips show identical text (Priority 6).
+  const abbrMap = buildAbbrMap(games);
+  const shortLabel = (name) => abbrMap.get(name) || (name || '').slice(0,4).toUpperCase();
 
   const sortedGames = [...games].sort((a,b) => new Date(a.kickoff||0) - new Date(b.kickoff||0));
+
+  // Blinding rule (Priority 3): hide other players' chip contents from a viewer
+  // who hasn't earned the right to see picks yet. The viewer ALWAYS sees their
+  // own chip. Once the week is live/final, everything is visible to everyone.
+  const week = getWeeks().find(w => w.weekId === weekId);
+  const canSeeOthers = week ? canViewOtherPicks(week, session.playerId) : false;
 
   const gameCards = sortedGames.map(game => {
     const sv = game.lockedSpread !== null ? game.lockedSpread : game.spread;
@@ -1100,7 +1320,14 @@ function renderDashboardCompact(players, games, allPicks, weeklyResults, weekId,
       const pick = picks.find(pk => pk.gameId === game.gameId && pk.playerId === player.playerId);
       const initials = escHtml(getPlayerInitials(player));
       if (!pick) {
-        return `<div class="dc-chip dc-chip-none" title="${escHtml(player.displayName)}: no pick"><span class="dc-chip-init">${initials}</span><span class="dc-chip-pick">—</span></div>`;
+        return `<div class="dc-chip dc-chip-none" data-player-id="${escHtml(player.playerId)}" draggable="true" title="${escHtml(player.displayName)}: no pick"><span class="dc-chip-init">${initials}</span><span class="dc-chip-pick">—</span></div>`;
+      }
+      const isSelf = session.playerId === player.playerId;
+      // Blinding: if the viewer can't see others' picks yet AND this isn't
+      // their own pick, render an opaque "•••" chip. The chip still shows
+      // initials so they can see WHO has submitted, just not WHAT they picked.
+      if (!isSelf && !canSeeOthers) {
+        return `<div class="dc-chip dc-chip-blind" data-player-id="${escHtml(player.playerId)}" draggable="true" title="${escHtml(player.displayName)}: hidden until you submit"><span class="dc-chip-init">${initials}</span><span class="dc-chip-pick">•••</span></div>`;
       }
       const result = evaluatePick(pick, game);
       const pickedSide = pick.selectedTeam === game.homeTeam ? 'home' : pick.selectedTeam === game.awayTeam ? 'away' : null;
@@ -1115,7 +1342,7 @@ function renderDashboardCompact(players, games, allPicks, weeklyResults, weekId,
       } else if (result === PICK_RESULT.WIN) { cls = 'dc-chip-win'; icon = '✓'; }
       else if (result === PICK_RESULT.LOSS) { cls = 'dc-chip-loss'; icon = '✗'; }
       else if (result === PICK_RESULT.NO_DECISION) { cls = 'dc-chip-nd'; icon = '—'; }
-      return `<div class="dc-chip ${cls}" title="${escHtml(player.displayName)} picked ${escHtml(pick.selectedTeam)}"><span class="dc-chip-init">${initials}</span><span class="dc-chip-pick">${escHtml(pickShort)}${icon?` ${icon}`:''}</span></div>`;
+      return `<div class="dc-chip ${cls}" data-player-id="${escHtml(player.playerId)}" draggable="true" title="${escHtml(player.displayName)} picked ${escHtml(pick.selectedTeam)}"><span class="dc-chip-init">${initials}</span><span class="dc-chip-pick">${escHtml(pickShort)}${icon?` ${icon}`:''}</span></div>`;
     }).join('');
 
     const espn = game.espnEventId
@@ -1378,6 +1605,31 @@ function renderCommPage() {
         <div class="admin-section-title">🔍 Data Proof</div>
         <div class="card">${renderDataProofPanel(proof,ps,week,games)}</div>
       </div>`);
+
+    // Priority 14: Weekly Summary email helper. Shows up once every game on
+    // the slate is FINAL, so the Commissioner has a one-click way to wrap the
+    // week. Hidden when there are no games yet, or when any game is still
+    // scheduled/live (sending early would be misleading).
+    if (week && games.length > 0 && games.every(g => g.status === GAME_STATUS.FINAL)) {
+      const recipients = getPlayers().filter(p => p.active && p.email).length;
+      const totalActive = getPlayers().filter(p => p.active).length;
+      sections.push(`
+        <div class="admin-section">
+          <div class="admin-section-title">📤 Weekly Summary Email</div>
+          <div class="card">
+            <p class="text-secondary text-sm mb-sm">All games are final — you can send the week's recap to players.</p>
+            <p class="text-muted text-xs mb-md">
+              Email-on-file: <strong>${recipients}</strong> of ${totalActive} active players.
+              ${recipients < totalActive ? '<br>Players without an email won\'t receive the recap — add emails in <em>Players, PINs & Contact</em>.' : ''}
+            </p>
+            <div class="flex gap-sm flex-wrap">
+              <button class="btn btn-primary btn-sm" id="weekly-summary-preview-btn">👁 Preview</button>
+              <button class="btn btn-secondary btn-sm" id="weekly-summary-send-btn" ${recipients===0?'disabled':''}>📤 Open in Mail Client</button>
+            </div>
+            <div id="weekly-summary-preview" class="weekly-summary-preview" style="display:none"></div>
+          </div>
+        </div>`);
+    }
 
     // Available Games Pool
     if (availGames.length) {
@@ -1745,6 +1997,28 @@ function renderCommPage() {
             <input class="form-input" id="sec-site-pin-confirm" type="text" inputmode="numeric" maxlength="12" />
           </div>
           <button class="btn btn-primary btn-sm" id="sec-change-site-pin-btn">🚪 Change Site PIN</button>
+
+          <div class="divider"></div>
+          <div class="card-title mb-sm">Welcome Screen Text</div>
+          <p class="text-muted text-xs mb-sm">Shown above the PIN entry on the front gate. Leave blank to use defaults.</p>
+          <div class="form-group">
+            <label class="form-label">Welcome title</label>
+            <input class="form-input" id="sec-welcome-title" type="text" maxlength="80" placeholder="welcome to irb pick 'ems" value="${escHtml(settings.welcomeTitle||'')}" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Welcome subtitle</label>
+            <input class="form-input" id="sec-welcome-subtitle" type="text" maxlength="80" placeholder="enter access pin" value="${escHtml(settings.welcomeSubtitle||'')}" />
+          </div>
+          <button class="btn btn-primary btn-sm" id="sec-save-welcome-btn">💾 Save Welcome Text</button>
+
+          <div class="divider"></div>
+          <div class="card-title mb-sm">Commissioner Contact Email</div>
+          <p class="text-muted text-xs mb-sm">Used by the Feedback form on the Rules tab and by the Weekly Summary helper. Leave blank to disable mailto-based features.</p>
+          <div class="form-group">
+            <label class="form-label">Email</label>
+            <input class="form-input" id="sec-comm-email" type="email" placeholder="commissioner@example.com" value="${escHtml(settings.commissionerEmail||'')}" />
+          </div>
+          <button class="btn btn-primary btn-sm" id="sec-save-comm-email-btn">💾 Save Email</button>
         </div>
       </div>`);
 
@@ -2586,9 +2860,16 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
       const g=getGame(gid); if(!g)return;
       const hsRaw=row.querySelector('.batch-home-score')?.value;
       const asRaw=row.querySelector('.batch-away-score')?.value;
-      const status=row.querySelector('.batch-status')?.value||g.status;
+      let status=row.querySelector('.batch-status')?.value||g.status;
       const hs=hsRaw!==''&&hsRaw!=null?parseInt(hsRaw):null;
       const as_=asRaw!==''&&asRaw!=null?parseInt(asRaw):null;
+
+      // Earlier bug: if user filled in scores but left status='scheduled', the
+      // scores were silently nulled by the status==='scheduled'?null:hs rule.
+      // Now: if scores are present but status is still scheduled, auto-promote
+      // to 'live'. The Commissioner explicitly choosing scheduled+blank scores
+      // still correctly resets the game.
+      if (status === 'scheduled' && (hs !== null || as_ !== null)) status = 'live';
 
       let actualWinner=null, atsWinner=null;
       if(status==='final'&&hs!==null&&as_!==null){
@@ -2610,15 +2891,26 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
     showToast(`💾 Applied changes to ${applied} games`,'success'); renderCommPage();
   });
 
-  // ── Batch grid: randomize plausible scores (does not change status) ──
+  // ── Batch grid: randomize plausible scores AND bump status to final ──
+  // The whole point of randomize is to pressure-test the dashboard's live/final
+  // states. If we left status as scheduled, the scores wouldn't visibly change
+  // anything (the picks matrix only shows scores for live/final games), which
+  // is exactly the "scores disappear" symptom the user reported.
   document.getElementById('demo-batch-randomize')?.addEventListener('click',()=>{
-    document.querySelectorAll('.batch-grid tbody tr').forEach(row=>{
+    const rows = document.querySelectorAll('.batch-grid tbody tr');
+    rows.forEach(row=>{
       const rand=()=>Math.floor(Math.random()*42); // 0–41, realistic CFB range
       const h=row.querySelector('.batch-home-score');
       const a=row.querySelector('.batch-away-score');
-      if(h)h.value=rand(); if(a)a.value=rand();
+      const s=row.querySelector('.batch-status');
+      if(h) h.value=rand();
+      if(a) a.value=rand();
+      // Bump status to 'final' so the user sees decided wins/losses on Apply.
+      // (They can pick 'live' or 'scheduled' afterwards if they want to test
+      // those states.)
+      if(s) s.value='final';
     });
-    showToast('🎲 Random scores filled — review then Apply All','warning');
+    showToast('🎲 Randomized — set to FINAL. Click Apply to commit.','warning');
   });
 
 
@@ -2845,6 +3137,25 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
     renderCommPage();
   });
 
+  // ── Security & Settings: save Welcome Screen text ──
+  document.getElementById('sec-save-welcome-btn')?.addEventListener('click', ()=>{
+    const t = (document.getElementById('sec-welcome-title')?.value || '').trim();
+    const sub = (document.getElementById('sec-welcome-subtitle')?.value || '').trim();
+    saveSetting('welcomeTitle', t);
+    saveSetting('welcomeSubtitle', sub);
+    showToast('Welcome text saved','success');
+  });
+
+  // ── Security & Settings: save Commissioner contact email ──
+  document.getElementById('sec-save-comm-email-btn')?.addEventListener('click', ()=>{
+    const email = (document.getElementById('sec-comm-email')?.value || '').trim();
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showToast('That doesn\'t look like a valid email','error'); return;
+    }
+    saveSetting('commissionerEmail', email);
+    showToast(email ? 'Commissioner email saved' : 'Commissioner email cleared', 'success');
+  });
+
   // ── Cloud Sync (backend) handlers ──
   document.getElementById('be-test-btn')?.addEventListener('click', async ()=>{
     const url=document.getElementById('be-url')?.value.trim();
@@ -2951,6 +3262,105 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
       }));
     }catch(err){ if(el)el.innerHTML=`Error: ${escHtml(String(err.message||err))}`; }
   });
+
+  // ── Priority 14: Weekly Summary email (preview + send via mail client) ──
+  document.getElementById('weekly-summary-preview-btn')?.addEventListener('click', () => {
+    const el = document.getElementById('weekly-summary-preview');
+    if (!el) return;
+    if (el.style.display === 'none') {
+      const text = buildWeeklySummary(week);
+      el.textContent = text;
+      el.style.display = 'block';
+    } else {
+      el.style.display = 'none';
+    }
+  });
+  document.getElementById('weekly-summary-send-btn')?.addEventListener('click', () => {
+    const recipients = getPlayers().filter(p => p.active && p.email).map(p => p.email);
+    if (!recipients.length) { showToast('No player has an email on file','error'); return; }
+    const body = buildWeeklySummary(week);
+    const subject = `CFB Pickems — ${formatWeekLabel(week)} recap`;
+    const siteUrl = window.location.origin + window.location.pathname;
+    const fullBody = `${body}\n\n— Sent from CFB Pickems\n${siteUrl}`;
+    const mailto = `mailto:?bcc=${encodeURIComponent(recipients.join(','))}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(fullBody)}`;
+    if (mailto.length > 1800) {
+      showToast(`⚠️ Long recipient list (${recipients.length}). If your mail client only opens a few, copy emails manually.`,'warning');
+    }
+    window.location.href = mailto;
+    showToast(`✉ Opening mail client for ${recipients.length} recipient${recipients.length>1?'s':''}`,'success');
+  });
+}
+
+/**
+ * Priority 14: build a plain-text weekly recap suitable for an email body.
+ *
+ * Sections:
+ *   1. Final picks table (one line per player: W–L record + tiebreaker)
+ *   2. Weekly winner (notes if won by tiebreaker)
+ *   3. Weekly loser (the "obligation owner")
+ *   4. Season standings to date (top to bottom by total wins)
+ *
+ * Plain text only — mailto: URLs and many mail clients mangle HTML. Easy to
+ * read in any mail client and easy to copy/paste anywhere else.
+ */
+function buildWeeklySummary(week) {
+  if (!week) return '';
+  const players = getPlayers().filter(p => p.active);
+  const picks = getPicks(week.weekId);
+  const games = getGames(week.weekId);
+  const actualTB = week.actualTiebreakerValue ?? null;
+  const results = calculateWeeklyResults(week.weekId, players, picks, games, actualTB);
+
+  const lines = [];
+  lines.push(`📊 ${formatWeekLabel(week)} — Recap`);
+  lines.push('');
+  lines.push('━━━ Final picks ━━━');
+  results.forEach(r => {
+    const name = players.find(p => p.playerId === r.playerId)?.displayName || '(unknown)';
+    const w = r.correctPicks, l = r.incorrectPicks;
+    const tb = r.tiebreakerGuess !== null && r.tiebreakerGuess !== undefined
+      ? (actualTB !== null ? `TB ${r.tiebreakerGuess} (Δ${r.tiebreakerDelta})` : `TB ${r.tiebreakerGuess}`)
+      : 'TB —';
+    const marker = r.isWinner ? ' 🏆' : r.isLoser ? ' 💀' : '';
+    lines.push(`  ${String(r.rank).padStart(2)}. ${name.padEnd(18)} ${w}–${l}  ${tb}${marker}`);
+  });
+  lines.push('');
+
+  const winner = results.find(r => r.isWinner);
+  const loser  = results.find(r => r.isLoser);
+  if (winner) {
+    const wName = players.find(p => p.playerId === winner.playerId)?.displayName || '(unknown)';
+    lines.push(`🏆 Weekly winner: ${wName}${winner.wonByTiebreaker ? ' (won by tiebreaker)' : ''}`);
+  }
+  if (loser) {
+    const lName = players.find(p => p.playerId === loser.playerId)?.displayName || '(unknown)';
+    lines.push(`💀 Weekly loser: ${lName}`);
+  }
+
+  // Obligations for this week, if any are configured
+  const obligations = getObligations().filter(o => o.weekId === week.weekId);
+  if (obligations.length) {
+    lines.push('');
+    lines.push('━━━ Obligations ━━━');
+    obligations.forEach(o => {
+      const pName = players.find(p => p.playerId === o.playerId)?.displayName || '(unknown)';
+      lines.push(`  ${pName}: ${o.description || o.kind}${o.status ? ` [${o.status}]` : ''}`);
+    });
+  }
+
+  // Season standings to date
+  const allResults = getWeeklyResults();
+  const standings = calculateSeasonStandings(players, allResults);
+  if (standings.length) {
+    lines.push('');
+    lines.push('━━━ Season standings ━━━');
+    standings.forEach(s => {
+      const pName = players.find(p => p.playerId === s.playerId)?.displayName || '(unknown)';
+      lines.push(`  ${String(s.currentRank).padStart(2)}. ${pName.padEnd(18)} ${s.totalCorrect}–${s.totalIncorrect}  (${s.weeklyWins}W / ${s.weeklyLosses}L)`);
+    });
+  }
+
+  return lines.join('\n');
 }
 
 // ─── DATA PROOF PANEL ─────────────────────────────────────────────────────────
@@ -3241,7 +3651,86 @@ function renderRulesPage() {
     </div>
     <div class="card"><h3 style="color:var(--maroon);margin-bottom:8px">📱 Install as iPhone App</h3>
       <p class="text-secondary text-sm">Open in Safari → Share → <strong>Add to Home Screen</strong>.</p>
+    </div>
+
+    <!-- Priority 13: low-profile feedback / feature-request form -->
+    <div class="card feedback-card">
+      <h3 style="color:var(--maroon);margin-bottom:6px;font-size:.95rem">💡 Suggest a feature / report an issue</h3>
+      <p class="text-muted text-xs mb-sm">Quick way to send the Commissioner an idea or a bug. Auto-fills your name, the date, and the app version.</p>
+      <div class="form-group" style="margin-bottom:8px">
+        <label class="form-label" style="font-size:.7rem">Your name</label>
+        <input class="form-input" id="fb-name" type="text" value="${escHtml(getCurrentPlayerName())}" />
+      </div>
+      <div class="form-group" style="margin-bottom:8px">
+        <label class="form-label" style="font-size:.7rem">Description</label>
+        <textarea class="form-input" id="fb-body" rows="3" placeholder="What's the request, bug, or idea?"></textarea>
+      </div>
+      <div class="flex gap-sm flex-wrap">
+        <button class="btn btn-primary btn-sm" id="fb-submit-btn">📨 Send to Commissioner</button>
+        <span class="text-muted text-xs" id="fb-status"></span>
+      </div>
+    </div>
+
+    <div class="app-version-footer" title="Build version">
+      CFB Pickems ${escHtml(APP_VERSION)} · ${escHtml(APP_VERSION_DATE)}
     </div>`;
+
+  // Wire feedback handler (Priority 13)
+  document.getElementById('fb-submit-btn')?.addEventListener('click', submitFeedback);
+}
+
+/**
+ * Resolve the current player's display name for pre-filling forms.
+ * Returns empty string when not logged in — the user can type their name.
+ */
+function getCurrentPlayerName() {
+  const s = getSession();
+  if (!s?.playerId) return '';
+  const p = getPlayer(s.playerId);
+  return p?.displayName || '';
+}
+
+/**
+ * Send a feedback / feature-request submission.
+ * - Always opens the user's mail client (mailto:) to the Commissioner email
+ *   if one is configured in settings.commissionerEmail, otherwise a generic
+ *   subject line they can paste anywhere.
+ * - Additionally writes the entry to a `cfbp_feedback` list which syncs to
+ *   the Google Sheet automatically (via the storage seam) when cloud sync
+ *   is enabled — that's the "separate sheet" the priority asked for, without
+ *   us needing a second API.
+ */
+function submitFeedback() {
+  const name = (document.getElementById('fb-name')?.value || '').trim();
+  const body = (document.getElementById('fb-body')?.value || '').trim();
+  const status = document.getElementById('fb-status');
+  if (!body) { showToast('Please describe the request or issue first','error'); return; }
+  const entry = {
+    id: 'fb_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+    name: name || '(anonymous)',
+    body,
+    submittedAt: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    siteUrl: typeof window !== 'undefined' ? (window.location.origin + window.location.pathname) : '',
+  };
+  // Append to local store — auto-syncs to Sheet when cloud sync is on
+  appendFeedback(entry);
+  // Open mail client to the commissioner
+  const commEmail = (getSettings().commissionerEmail || '').trim();
+  const subject = `CFB Pickems feedback — ${entry.name}`;
+  const mailBody =
+    `Submitted: ${new Date(entry.submittedAt).toLocaleString()}\n` +
+    `App version: ${APP_VERSION}\n` +
+    `From: ${entry.name}\n` +
+    `Site: ${entry.siteUrl}\n\n` +
+    `${entry.body}\n`;
+  const mailto = `mailto:${encodeURIComponent(commEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(mailBody)}`;
+  if (commEmail) window.location.href = mailto;
+  if (status) status.textContent = commEmail
+    ? '✅ Saved + opening mail client'
+    : '✅ Saved. (No Commissioner email set yet — ask them to add one in Comm → Security.)';
+  document.getElementById('fb-body').value = '';
+  showToast('Thanks! Feedback recorded.','success');
 }
 
 // ─── FINALIZATION ─────────────────────────────────────────────────────────────
@@ -3585,6 +4074,155 @@ function matchupBare(game) {
 }
 
 /**
+ * Priority 7: order players for the dashboard view.
+ *  - The logged-in player ALWAYS lands in position 0 (their own column is the
+ *    most personally relevant — easiest to scan on mobile).
+ *  - After that, apply the user's saved drag-reorder from
+ *    settings.dashboardColumnOrder (per-device). Any players not in the saved
+ *    order get appended in their natural order.
+ *  - New players (just added to the league) appear at the end until reordered.
+ */
+function getOrderedPlayersForDashboard(players, viewerPlayerId) {
+  const order = getSettings().dashboardColumnOrder || [];
+  const byId = new Map(players.map(p => [p.playerId, p]));
+  const result = [];
+  const seen = new Set();
+  // Step 1: viewer's column first (if they're in the players list)
+  if (viewerPlayerId && byId.has(viewerPlayerId)) {
+    result.push(byId.get(viewerPlayerId));
+    seen.add(viewerPlayerId);
+  }
+  // Step 2: walk saved order, skipping viewer (already placed)
+  for (const pid of order) {
+    if (seen.has(pid)) continue;
+    const p = byId.get(pid);
+    if (p) { result.push(p); seen.add(pid); }
+  }
+  // Step 3: any new players not in saved order (natural order)
+  for (const p of players) {
+    if (!seen.has(p.playerId)) result.push(p);
+  }
+  return result;
+}
+
+/** Persist the new player-column order (per device). */
+function setDashboardColumnOrder(playerIds) {
+  saveSetting('dashboardColumnOrder', playerIds);
+}
+
+/**
+ * Hand-curated short abbreviations for major FBS programs. Used in compact
+ * dashboard chips where horizontal space is at a premium. Keys are exact
+ * school names (matching what ESPN / the data provider returns).
+ *
+ * Why this exists: the previous implementation took the last word of the
+ * school name ("Texas State" → "State"), which collapsed many schools to the
+ * same 4-letter token. This table gives each well-known program a unique
+ * abbreviation; unknown schools fall through to a smart-truncate that
+ * preserves words like "State", "Tech", "A&M".
+ */
+const TEAM_ABBR = {
+  // SEC
+  'Alabama':'BAMA','Arkansas':'ARK','Auburn':'AUB','Florida':'FLA','Georgia':'UGA',
+  'Kentucky':'UK','LSU':'LSU','Mississippi':'OLE','Ole Miss':'OLE','Mississippi State':'MSST',
+  'Missouri':'MIZZ','Oklahoma':'OU','South Carolina':'SCAR','Tennessee':'TENN','Texas':'TEX',
+  'Texas A&M':'TAMU','Vanderbilt':'VAN',
+  // Big Ten
+  'Illinois':'ILL','Indiana':'IND','Iowa':'IOWA','Maryland':'MD','Michigan':'MICH',
+  'Michigan State':'MSU','Minnesota':'MINN','Nebraska':'NEB','Northwestern':'NW','Ohio State':'OSU',
+  'Oregon':'ORE','Penn State':'PSU','Purdue':'PUR','Rutgers':'RUT','UCLA':'UCLA','USC':'USC',
+  'Washington':'WASH','Wisconsin':'WISC',
+  // Big 12
+  'Arizona':'ARIZ','Arizona State':'ASU','Baylor':'BAY','BYU':'BYU','Cincinnati':'CIN',
+  'Colorado':'COLO','Houston':'HOU','Iowa State':'ISU','Kansas':'KU','Kansas State':'KSU',
+  'Oklahoma State':'OKST','TCU':'TCU','Texas Tech':'TTU','UCF':'UCF','Utah':'UTAH',
+  'West Virginia':'WVU',
+  // ACC
+  'Boston College':'BC','California':'CAL','Clemson':'CLEM','Duke':'DUKE','Florida State':'FSU',
+  'Georgia Tech':'GT','Louisville':'LOU','Miami':'MIA','NC State':'NCST','North Carolina':'UNC',
+  'Notre Dame':'ND','Pittsburgh':'PITT','SMU':'SMU','Stanford':'STAN','Syracuse':'SYR',
+  'Virginia':'UVA','Virginia Tech':'VT','Wake Forest':'WAKE',
+  // AAC + selected G5
+  'Army':'ARMY','Charlotte':'CHAR','East Carolina':'ECU','Florida Atlantic':'FAU','Memphis':'MEM',
+  'Navy':'NAVY','North Texas':'UNT','Rice':'RICE','South Florida':'USF','Temple':'TEMP',
+  'Tulane':'TULN','Tulsa':'TLSA','UAB':'UAB','UTSA':'UTSA',
+  // Mountain West
+  'Air Force':'AF','Boise State':'BOIS','Colorado State':'CSU','Fresno State':'FRES',
+  'Hawaii':'HAW','Nevada':'NEV','New Mexico':'UNM','San Diego State':'SDSU','San Jose State':'SJSU',
+  'UNLV':'UNLV','Utah State':'USU','Wyoming':'WYO',
+  // Sun Belt
+  'Appalachian State':'APP','Arkansas State':'ARST','Coastal Carolina':'CCAR','Georgia Southern':'GASO',
+  'Georgia State':'GAST','James Madison':'JMU','Louisiana':'ULL','Louisiana Monroe':'ULM',
+  'Marshall':'MARS','Old Dominion':'ODU','South Alabama':'USA','Southern Miss':'USM',
+  'Texas State':'TXST','Troy':'TROY',
+  // MAC
+  'Akron':'AKR','Ball State':'BALL','Bowling Green':'BGSU','Buffalo':'BUFF','Central Michigan':'CMU',
+  'Eastern Michigan':'EMU','Kent State':'KENT','Massachusetts':'UMASS','Miami (OH)':'M-OH',
+  'Northern Illinois':'NIU','Ohio':'OHIO','Toledo':'TOL','Western Michigan':'WMU',
+  // CUSA
+  'FIU':'FIU','Jacksonville State':'JVST','Liberty':'LIB','Louisiana Tech':'LT','Middle Tennessee':'MTSU',
+  'New Mexico State':'NMSU','Sam Houston':'SHSU','UTEP':'UTEP','Western Kentucky':'WKU',
+  // Independents
+  'Connecticut':'UCONN','UConn':'UCONN',
+};
+
+/**
+ * Build a Map<schoolName, uniqueAbbr> for all teams in a list of games.
+ * Falls back to a smart-truncate for unknown schools, then runs a dedup pass
+ * so no two teams in the same render share an abbreviation (appending the
+ * first letter of the dropped word, e.g. "Sam Houston State" vs "Texas State"
+ * → SHSU vs TXST already; "X State" vs "X State" gets X-1, X-2 as last resort).
+ */
+function buildAbbrMap(games) {
+  const map = new Map();
+  const smartTrunc = (name) => {
+    if (!name) return '';
+    if (TEAM_ABBR[name]) return TEAM_ABBR[name];
+    const words = name.split(/\s+/).filter(Boolean);
+    // Single-word names: take first 4 chars uppercase.
+    if (words.length === 1) return words[0].slice(0, 4).toUpperCase();
+    // Multi-word: take first letter of each word, max 5 chars (handles "A&M" specifically).
+    const initials = words.map(w => w.replace(/[^A-Za-z&]/g,'').charAt(0)).join('').toUpperCase().slice(0,5);
+    return initials || words[0].slice(0,4).toUpperCase();
+  };
+
+  const teams = new Set();
+  for (const g of games) {
+    if (g.homeTeam) teams.add(g.homeTeam);
+    if (g.awayTeam) teams.add(g.awayTeam);
+  }
+  // First pass: assign best-known abbreviation
+  for (const t of teams) map.set(t, smartTrunc(t));
+
+  // Dedup pass: any two teams sharing an abbreviation get suffixed
+  const byAbbr = new Map();
+  for (const [team, abbr] of map) {
+    if (!byAbbr.has(abbr)) byAbbr.set(abbr, []);
+    byAbbr.get(abbr).push(team);
+  }
+  for (const [abbr, teamList] of byAbbr) {
+    if (teamList.length === 1) continue;
+    // Try to use a more distinctive abbreviation — take first 3 chars of the
+    // first DIFFERENT word in each name. If still colliding, add a numeric suffix.
+    teamList.forEach((team, i) => {
+      const words = team.split(/\s+/).filter(Boolean);
+      // Pick the first word that's distinctive (not "State", "University" etc.)
+      const distinctive = words.find(w => !/^(state|university|college|the|of)$/i.test(w)) || words[0];
+      const candidate = (distinctive.slice(0,3) + abbr.slice(-1)).toUpperCase();
+      map.set(team, candidate);
+    });
+    // After replacement, do one final dedup check — append numeric suffix to any still-colliding
+    const seen = new Map();
+    for (const team of teamList) {
+      const a = map.get(team);
+      if (!seen.has(a)) { seen.set(a, 1); }
+      else { const n = seen.get(a) + 1; seen.set(a, n); map.set(team, a.slice(0, 3) + n); }
+    }
+  }
+  return map;
+}
+
+/**
  * Render a game as "Away @ Home" (CFB convention — @ reads "at").
  * For neutral-site games we use "vs" instead and omit the home indicator.
  *  - sep: optional override ('@' or 'vs')
@@ -3616,11 +4254,14 @@ function showToast(msg,type='success'){
 // ─── SITE PIN GATE ────────────────────────────────────────────────────────────
 
 function showSitePinGate() {
+  const s = getSettings();
+  const title    = s.welcomeTitle    || "welcome to irb pick 'ems";
+  const subtitle = s.welcomeSubtitle || 'enter access pin';
   document.body.innerHTML = `
     <div class="site-gate">
       <div class="site-gate-inner">
-        <div class="site-gate-title">welcome to irb pick 'ems</div>
-        <div class="site-gate-subtitle">enter access pin</div>
+        <div class="site-gate-title">${escHtml(title)}</div>
+        <div class="site-gate-subtitle">${escHtml(subtitle)}</div>
         <input class="site-gate-input" id="site-pin-input" type="password" inputmode="numeric"
           maxlength="8" placeholder="_ _ _ _" autocomplete="off" />
         <div class="site-gate-error" id="site-gate-error" style="display:none">incorrect pin</div>

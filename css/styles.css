@@ -639,9 +639,10 @@ label[for="week-show-history"],label:has(#week-show-history){
 .main-content { overflow-x: hidden; }
 
 /* Narrow viewports — tighten page padding so 12+content+12 fits an iPhone SE
-   width (375px) without bleeding past. */
+   width (375px) without bleeding past. v14.1: bumped from 12→14px so cards
+   have a visible breathing margin on the left/right edges. */
 @media (max-width: 480px) {
-  :root { --page-pad: 12px; }
+  :root { --page-pad: 14px; }
   .app-header-inner { gap: 8px; padding: 10px var(--page-pad); }
   .app-logo-text { font-size: 1.05rem; }
   .app-logo-icon { width: 30px; height: 30px; font-size: 17px; }
@@ -742,3 +743,55 @@ label[for="week-show-history"],label:has(#week-show-history){
 .reaction-pick-option{background:transparent;border:none;cursor:pointer;font-size:1.1rem;padding:4px 6px;
   border-radius:6px;line-height:1;transition:background var(--transition)}
 .reaction-pick-option:hover{background:var(--bg-input)}
+
+/* ── v14.1: Mobile edge margin guard ──────────────────────────────────────────
+   Belt-and-suspenders to ensure cards never hug the viewport edges on phones,
+   regardless of what padding overrides any inner component might have. */
+@media (max-width: 480px) {
+  .main-content { padding-left: 14px; padding-right: 14px; }
+  /* dashboard-scroll wraps the wide matrix; let it have a touch of horizontal
+     margin too, since it sits flush against .main-content with no .card wrapper */
+  .dashboard-scroll, .batch-grid-scroll { margin-left: 0; margin-right: 0; }
+}
+
+/* ── v15: Reaction polish + blinding ─────────────────────────────────────────
+   Priority 9: fix emoji vertical-centering in bubbles (line-height: 1 was
+   pushing them to the baseline). Priority 5: zero-height empty strips with a
+   tiny "+" affordance still visible for logged-in players. */
+.reaction-chip{padding:3px 8px 4px;line-height:1.15}
+.reaction-chip-emoji{font-size:.95rem;line-height:1.15;display:inline-flex;align-items:center;height:1em}
+.reaction-add-btn{display:inline-flex;align-items:center;justify-content:center;
+  line-height:1;padding-bottom:1px /* nudge "+" off the bottom border */}
+.reaction-strip-empty{margin-top:2px}
+.reaction-add-btn-mini{width:18px;height:18px;font-size:.78rem;opacity:.55;border-style:dotted;border-width:1px}
+.reaction-add-btn-mini:hover{opacity:1}
+
+/* Picker — wrap on small viewports, scroll inside if it overflows. The palette
+   doubled in size (Priority 9) so this matters now. */
+.reaction-picker{flex-wrap:wrap;max-width:230px;max-height:80px;overflow-y:auto}
+@media (max-width: 480px) { .reaction-picker{max-width:200px} }
+
+/* Blinded chip — same shape as a normal chip but visually muted so it reads
+   as "deliberately hidden" rather than empty. Priority 3 in compact view. */
+.dc-chip-blind{background:var(--bg-input);color:var(--text-muted);opacity:.85}
+.dc-chip-blind .dc-chip-init{background:var(--text-muted)}
+.dc-chip-blind .dc-chip-pick{font-family:'Courier New',monospace;letter-spacing:.1em}
+
+/* Randomize-picks row above the games list (Priority 8) */
+.randomize-row{gap:8px;flex-wrap:wrap;background:var(--bg-card-alt);border:1px dashed var(--border);
+  border-radius:8px;padding:8px 12px;align-items:center}
+.randomize-row .text-xs{flex:1;min-width:160px}
+
+/* ── v15 Priority 7: column drag-to-reorder ────────────────────────────────────
+   Both matrix headers (.player-col) and compact chips (.dc-chip) are
+   draggable. The handle ≡ glyph indicates the affordance on desktop; on touch
+   the long-press gesture is the primary discovery path. */
+.player-col{position:relative;cursor:grab}
+.player-col:active{cursor:grabbing}
+.col-drag-handle{display:inline-block;color:var(--text-muted);font-size:.6rem;margin-right:4px;opacity:.4}
+.player-col:hover .col-drag-handle{opacity:.85}
+.col-dragging{opacity:.5}
+.col-drop-target{outline:2px dashed var(--maroon-light);outline-offset:1px;border-radius:6px}
+.dc-chip[draggable="true"]{cursor:grab;touch-action:pan-y}     /* allow vertical page scroll, drag is opt-in via long-press */
+.dc-chip[draggable="true"]:active{cursor:grabbing}
+.dc-chip.col-dragging{transform:scale(.95);box-shadow:0 0 0 2px var(--maroon-light)}

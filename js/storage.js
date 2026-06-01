@@ -34,6 +34,7 @@ const KEYS = {
   TB_GUESSES:  'cfbp_tiebreaker_guesses',
   REJECTED_SUGG: 'cfbp_rejected_suggestions',  // per-week dismissed suggested games
   REACTIONS:   'cfbp_reactions',                // per-week game emoji reactions
+  FEEDBACK:    'cfbp_feedback',                 // user-submitted feature requests / issues
   ACTIVE_WEEK: 'cfbp_active_week',
   FETCH_PROOF: 'cfbp_fetch_proof',
   SITE_UNLOCK: SITE_PIN_KEY,  // 'cfbp_site_unlocked'
@@ -97,6 +98,7 @@ export function ensureSeedData() {
   if(!load(KEYS.TB_GUESSES))  save(KEYS.TB_GUESSES, {});
   if(!load(KEYS.REJECTED_SUGG)) save(KEYS.REJECTED_SUGG, {});
   if(!load(KEYS.REACTIONS))   save(KEYS.REACTIONS,   {});
+  if(!load(KEYS.FEEDBACK))    save(KEYS.FEEDBACK,    []);
   if(!load(KEYS.ACTIVE_WEEK)) save(KEYS.ACTIVE_WEEK, REAL_WEEK_1_2026.weekId);
 }
 
@@ -114,6 +116,7 @@ export function resetToDemo() {
   save(KEYS.TB_GUESSES, {});
   save(KEYS.REJECTED_SUGG, {});
   save(KEYS.REACTIONS, {});
+  save(KEYS.FEEDBACK, []);
   save(KEYS.ACTIVE_WEEK, REAL_WEEK_1_2026.weekId);
   save(KEYS.FETCH_PROOF, null);
   clearSession();
@@ -416,6 +419,19 @@ export function clearReactionsForWeek(weekId) {
   const all = _reactionsAll();
   if (all[weekId]) { delete all[weekId]; _saveReactions(all); }
 }
+
+// ─── FEEDBACK / FEATURE REQUESTS ─────────────────────────────────────────────
+// Player-submitted feedback (Priority 13). Lives at KEYS.FEEDBACK as a list.
+// Each entry: { id, name, body, submittedAt, appVersion, siteUrl }.
+// Goes through load()/save() so it auto-syncs to the Google Sheet when cloud
+// sync is enabled — that's the "separate sheet" the priority asked for.
+export function getFeedback() { return load(KEYS.FEEDBACK) || []; }
+export function appendFeedback(entry) {
+  const all = getFeedback();
+  all.push(entry);
+  save(KEYS.FEEDBACK, all);
+}
+export function clearFeedback() { save(KEYS.FEEDBACK, []); }
 
 // ─── PICKS ────────────────────────────────────────────────────────────────────
 
