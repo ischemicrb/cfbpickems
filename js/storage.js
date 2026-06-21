@@ -128,14 +128,50 @@ export function getSettings() { return{...DEFAULT_SETTINGS,...(load(KEYS.SETTING
 export function saveSetting(k,v){ const s=getSettings();s[k]=v;save(KEYS.SETTINGS,s); }
 export function saveSettings(s){ save(KEYS.SETTINGS,s); }
 
-// ─── TIMEZONE ─────────────────────────────────────────────────────────────────
+// ─── TIMEZONE + THEME (per-player when logged in, per-device otherwise) ───────
+//
+// Each player can choose their own time zone and color theme. Preferences live
+// on the player record (under `preferences.tz` / `preferences.theme`) so when
+// the league is connected to a shared backend, every player's choices follow
+// THEM across devices instead of being clobbered by whoever logged in last.
+//
+// When nobody is logged in (front gate, anonymous viewer), the device-level
+// fallback in `settings.timezone` / `settings.theme` is used, so the app
+// still has a reasonable default before the user picks a player.
 
-export function getTimezone() { return getSettings().timezone || 'PT'; }
-export function setTimezone(tzKey) { saveSetting('timezone', tzKey); }
+function _playerPref(key) {
+  const sess = getSession();
+  if (!sess?.playerId) return undefined;
+  const p = getPlayer(sess.playerId);
+  return p?.preferences?.[key];
+}
 
-// ─── THEME (per-device — keyed to settings so it survives reloads) ────────────
-export function getTheme() { return getSettings().theme || 'aggie'; }
-export function setTheme(themeKey) { saveSetting('theme', themeKey); }
+function _setPlayerPref(key, value) {
+  const sess = getSession();
+  if (!sess?.playerId) return false;
+  const players = getPlayers();
+  const idx = players.findIndex(p => p.playerId === sess.playerId);
+  if (idx < 0) return false;
+  const prefs = { ...(players[idx].preferences || {}), [key]: value };
+  players[idx] = { ...players[idx], preferences: prefs };
+  save(KEYS.PLAYERS, players);
+  return true;
+}
+
+export function getTimezone() {
+  return _playerPref('tz') || getSettings().timezone || 'PT';
+}
+export function setTimezone(tzKey) {
+  // If a player is logged in, persist on their record; otherwise device default.
+  if (!_setPlayerPref('tz', tzKey)) saveSetting('timezone', tzKey);
+}
+
+export function getTheme() {
+  return _playerPref('theme') || getSettings().theme || 'aggie';
+}
+export function setTheme(themeKey) {
+  if (!_setPlayerPref('theme', themeKey)) saveSetting('theme', themeKey);
+}
 
 // ─── FETCH PROOF ──────────────────────────────────────────────────────────────
 

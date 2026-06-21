@@ -393,9 +393,13 @@ input[id^="pin-"],input[id^="rp-pin"],input[id="comm-password-input"]{autocomple
   text-align:center;max-width:320px;width:100%;
   font-family:'Courier New',Courier,monospace;
 }
+.site-gate-title-top{
+  color:#aaa;font-size:.8rem;font-weight:400;
+  letter-spacing:.22em;text-transform:lowercase;margin-bottom:6px;line-height:1.2;
+}
 .site-gate-title{
-  color:#fff;font-size:clamp(1rem,4vw,1.4rem);font-weight:400;
-  letter-spacing:.12em;text-transform:lowercase;margin-bottom:8px;line-height:1.4;
+  color:#fff;font-size:clamp(1.4rem,5.5vw,1.95rem);font-weight:500;
+  letter-spacing:.1em;text-transform:lowercase;margin-bottom:14px;line-height:1.25;
 }
 .site-gate-subtitle{
   color:#888;font-size:.8rem;letter-spacing:.15em;text-transform:lowercase;margin-bottom:28px;
@@ -920,4 +924,96 @@ label[for="week-show-history"],label:has(#week-show-history){
   background: var(--win); color: #fff;
   /* "FINAL" pill uses the same saturated green as the result cells so the
      two visual languages stay consistent. */
+}
+
+/* ── v15.2: Alma Mater Watch result pills (straight-up only) ───────────────
+   Replaces the previous bare <strong> approach with clear bordered pills so
+   it's unmistakable that this column is about straight-up W/L (the game
+   result), not ATS. Stark saturated colors match the dashboard final cells. */
+.alma-result-pill {
+  display: inline-flex; align-items: center;
+  padding: 1px 8px; border-radius: 10px;
+  font-family: 'Oswald', sans-serif; font-weight: 700; font-size: .7rem;
+  letter-spacing: .04em; line-height: 1.5;
+}
+.alma-result-pill.alma-result-win  { background: var(--win);  color: #fff; }
+.alma-result-pill.alma-result-loss { background: var(--loss); color: #fff; }
+.alma-result-pill.alma-result-tie  { background: var(--text-muted); color: #fff; }
+
+.alma-live-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 8px; border-radius: 10px;
+  background: var(--maroon-pale); color: var(--maroon-mid);
+  border: 1px solid var(--maroon-tint);
+  font-family: 'Oswald', sans-serif; font-weight: 600; font-size: .68rem;
+  letter-spacing: .04em; line-height: 1.5;
+}
+.alma-live-pill.alma-live-ahead  { color: var(--win); border-color: rgba(26,122,63,.35); background: rgba(26,122,63,.10); }
+.alma-live-pill.alma-live-behind { color: var(--loss); border-color: rgba(185,28,28,.35); background: rgba(185,28,28,.10); }
+
+/* ── v15.2: Edit-mode banner on picks page ─────────────────────────────────── */
+.edit-mode-banner {
+  background: var(--maroon-pale); color: var(--maroon-mid);
+  border: 1px solid var(--maroon-tint); border-radius: 8px;
+  padding: 10px 12px; font-size: .82rem; margin-bottom: 12px;
+  line-height: 1.35;
+}
+.mr-sm { margin-right: 8px; }
+
+/* ── v15.2 Commissioner panel tabs ──────────────────────────────────────────
+   Groups the 18 admin sections into 5 buckets (Week / Games / Players /
+   Settings / Data) so the panel doesn't require infinite scrolling.
+
+   The active tab is set as data-comm-active on the container; CSS hides any
+   .admin-section whose data-comm-tab doesn't match. The section header and
+   the Sections menu (📚) stay visible across all tabs. */
+
+.comm-tabbar {
+  display: flex; gap: 4px;
+  background: var(--bg-card-alt); border: 1px solid var(--border);
+  border-radius: 12px; padding: 4px;
+  margin-bottom: 16px;
+  position: sticky; top: 0; z-index: 50;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  overflow-x: auto;          /* allow horizontal scroll on very narrow phones */
+  scrollbar-width: none;
+}
+.comm-tabbar::-webkit-scrollbar { display: none; }
+
+.comm-tab {
+  flex: 1 1 0; min-width: 60px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 7px 8px;
+  background: transparent; border: none; cursor: pointer;
+  border-radius: 8px;
+  font-family: 'Oswald', sans-serif; font-weight: 600;
+  color: var(--text-muted);
+  transition: all var(--transition);
+}
+.comm-tab:hover { color: var(--maroon); background: rgba(80,0,0,.04); }
+.comm-tab.active {
+  background: var(--maroon);
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(80,0,0,.25);
+}
+.comm-tab-icon { font-size: 1.05rem; line-height: 1; }
+.comm-tab-label { font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; }
+
+/* Default: hide all sections; the active-tab rule below re-shows the ones
+   matching the current tab. We're explicit about which selectors hide so the
+   section-header (h2 "Commissioner Panel"), the .comm-tabbar itself, and the
+   📚 sections menu (which has no data-comm-tab) remain visible. */
+#page-commissioner[data-comm-active] .admin-section[data-comm-tab] { display: none; }
+#page-commissioner[data-comm-active="week"]     .admin-section[data-comm-tab="week"],
+#page-commissioner[data-comm-active="games"]    .admin-section[data-comm-tab="games"],
+#page-commissioner[data-comm-active="players"]  .admin-section[data-comm-tab="players"],
+#page-commissioner[data-comm-active="settings"] .admin-section[data-comm-tab="settings"],
+#page-commissioner[data-comm-active="data"]     .admin-section[data-comm-tab="data"] {
+  display: block;
+}
+
+@media (max-width: 480px) {
+  .comm-tab { padding: 6px 4px; min-width: 52px; }
+  .comm-tab-label { font-size: .65rem; }
+  .comm-tab-icon { font-size: 1rem; }
 }

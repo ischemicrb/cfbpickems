@@ -4,8 +4,8 @@
  * One-stop place to update the user-visible version string + release date.
  * Surfaced in the footer of the Rules tab (Priority 12).
  */
-export const APP_VERSION = 'v0.15.1';
-export const APP_VERSION_DATE = '2026-06-01';
+export const APP_VERSION = 'v0.15.2';
+export const APP_VERSION_DATE = '2026-06-04';
 
 
 import {
@@ -78,7 +78,10 @@ import {
 const state = {
   currentTab: 'picks',
   draftPicks: {}, draftTiebreaker: null,
+  editingPicks: false, // true while a logged-in player is updating their already-submitted picks
   dashboardWeekId: null,
+  // Active tab within the Commissioner panel (week / games / players / settings / data)
+  commTab: 'week',
   lastFetchResult: null,
   // Available-games filter (commissioner panel). Persists within a session.
   availFilter: {
@@ -282,11 +285,8 @@ function fmtTime(iso, game=null) { return formatGameTime(iso, tz(), game); }
 function applyTheme(themeKey) {
   const key = themeKey || getTheme() || 'aggie';
   const body = document.body;
-  // Strip any previous theme-* class
   [...body.classList].forEach(c => { if (c.startsWith('theme-')) body.classList.remove(c); });
   body.classList.add('theme-' + key);
-  // Reflect in the theme-color meta so the iOS/Android browser chrome matches
-  // (best-effort — falls back to maroon if computed style isn't available).
   try {
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) {
@@ -294,6 +294,18 @@ function applyTheme(themeKey) {
       if (c) meta.setAttribute('content', c);
     }
   } catch {}
+}
+
+/**
+ * Re-apply the player's (or device-fallback) theme + timezone + re-render the
+ * toggle pills in the header. Call whenever session changes (login/logout/
+ * player switch) so a player's chosen color scheme and TZ follow them across
+ * devices and don't get clobbered by whoever logged in last.
+ */
+function resyncPlayerPreferences() {
+  applyTheme(getTheme());
+  renderTzToggle();
+  renderThemeToggle();
 }
 
 function renderThemeToggle() {
@@ -363,14 +375,14 @@ function renderPicksPage() {
   }
 
   const player = getPlayer(session.playerId);
-  if (!player) { clearSession(); renderPicksPage(); return; }
+  if (!player) { clearSession(); resyncPlayerPreferences(); renderPicksPage(); return; }
 
   const games       = week ? getGames(week.weekId).sort((a,b) => new Date(a.kickoff)-new Date(b.kickoff)) : [];
   const submitted   = week ? hasPlayerSubmitted(week.weekId, session.playerId) : false;
   const displayName = week ? getDisplayNamePlain(week.weekId, session.playerId, getPlayers()) : player.displayName;
   const { allowed, reason } = canPlayerSubmitPicks(week, session.playerId);
 
-  if (submitted) { renderSubmittedView(c, week, games, session, displayName); return; }
+  if (submitted && !state.editingPicks) { renderSubmittedView(c, week, games, session, displayName); return; }
 
   if (!allowed) {
     const ep = week ? getPicks(week.weekId, session.playerId) : [];
@@ -385,17 +397,28 @@ function renderPicksPage() {
         </div>
       </div>
       <button class="btn btn-ghost btn-sm mt-md" id="logout-btn">Log Out / Switch Player</button>`;
-    document.getElementById('logout-btn')?.addEventListener('click', () => { clearSession(); state.draftPicks={}; renderPicksPage(); });
+    document.getElementById('logout-btn')?.addEventListener('click', () => { clearSession(); state.draftPicks={}; resyncPlayerPreferences(); renderPicksPage(); });
     return;
+  }
+
+  // When entering edit mode (player came back to update already-submitted
+  // picks), pre-fill state.draftPicks from the saved picks so the UI shows
+  // their current selections as already chosen. Same for the tiebreaker.
+  if (state.editingPicks && Object.keys(state.draftPicks).length === 0) {
+    const existing = getPicks(week.weekId, session.playerId);
+    existing.forEach(p => { state.draftPicks[p.gameId] = p.selectedTeam; });
+    const tb = getTiebreakerGuess(week.weekId, session.playerId);
+    if (tb !== null && tb !== undefined) state.draftTiebreaker = tb;
   }
 
   c.innerHTML = `
     ${renderWeekBanner(week)}
     <div class="flex-between mb-md">
       <div><span class="text-maroon font-display" style="font-size:1.05rem">${escHtml(displayName)}</span>
-      <span class="text-muted text-sm"> — make your picks</span></div>
+      <span class="text-muted text-sm"> — ${state.editingPicks?'update your picks':'make your picks'}</span></div>
       <button class="btn btn-ghost btn-sm" id="logout-btn">Log Out</button>
     </div>
+    ${state.editingPicks?'<div class="edit-mode-banner">✏️ You\'re updating picks you already submitted. Changes save when you click Submit again.</div>':''}
     <div class="flex-between mb-sm randomize-row">
       <span class="text-muted text-xs">Need a quick start? Randomize then edit anything you want to change.</span>
       <button class="btn btn-ghost btn-sm" id="randomize-picks-btn" title="Randomly pick a team for each game">🎲 Randomize My Picks</button>
@@ -404,10 +427,10 @@ function renderPicksPage() {
     ${renderTiebreakerInput(week)}
     <div class="submit-bar">
       <div class="submit-progress"><strong id="pick-count">0</strong>/${games.length} + tiebreaker</div>
-      <button class="btn btn-primary" id="submit-picks-btn" disabled>Submit All Picks</button>
+      <button class="btn btn-primary" id="submit-picks-btn" disabled>${state.editingPicks?'Update Picks':'Submit All Picks'}</button>
     </div>`;
 
-  document.getElementById('logout-btn')?.addEventListener('click', () => { clearSession(); state.draftPicks={}; state.draftTiebreaker=null; renderPicksPage(); });
+  document.getElementById('logout-btn')?.addEventListener('click', () => { clearSession(); state.draftPicks={}; state.draftTiebreaker=null; resyncPlayerPreferences(); renderPicksPage(); });
   document.getElementById('tb-input')?.addEventListener('input', e => {
     state.draftTiebreaker = e.target.value !== '' ? parseFloat(e.target.value) : null;
     updateSubmitEnabled(games, week);
@@ -503,6 +526,9 @@ function bindLoginScreen() {
     const pin = document.getElementById('pin-input')?.value||'';
     if (verifyPlayerPin(selectedId, pin)) {
       setSession(selectedId, false, true); state.draftPicks={}; state.draftTiebreaker=null;
+      // Per-player preferences: re-resolve theme + TZ for the newly-logged-in
+      // player (they may differ from device default or previous player).
+      resyncPlayerPreferences();
       showToast('✅ Logged in!','success'); renderPicksPage();
     } else {
       showToast('❌ Incorrect PIN','error');
@@ -516,6 +542,9 @@ function bindLoginScreen() {
 function renderSubmittedView(c, week, games, session, displayName) {
   const picks   = getPicks(week.weekId, session.playerId);
   const tbGuess = getTiebreakerGuess(week.weekId, session.playerId);
+  // Can the player still edit? Same gating as initial submission — week must
+  // be open. Once locked/live/final, the edit button hides.
+  const { allowed: canEdit } = canPlayerSubmitPicks(week, session.playerId);
   c.innerHTML = `
     ${renderWeekBanner(week)}
     <div class="flex-between mb-md">
@@ -529,10 +558,19 @@ function renderSubmittedView(c, week, games, session, displayName) {
     </div>`:''}
     <div id="submitted-games"></div>
     <div class="card mt-md text-center" style="padding:16px">
+      ${canEdit?'<button class="btn btn-secondary mr-sm" id="edit-picks-btn">✏️ Edit My Picks</button>':''}
       <button class="btn btn-primary" id="go-dash-btn">View Dashboard</button>
     </div>`;
-  document.getElementById('logout-btn')?.addEventListener('click', () => { clearSession(); renderPicksPage(); });
+  document.getElementById('logout-btn')?.addEventListener('click', () => { clearSession(); resyncPlayerPreferences(); renderPicksPage(); });
   document.getElementById('go-dash-btn')?.addEventListener('click', () => navigateTo('dashboard'));
+  document.getElementById('edit-picks-btn')?.addEventListener('click', () => {
+    // Enter edit mode. The picks-page render will pre-fill draftPicks from
+    // existing picks and show the editable UI with an explanatory banner.
+    state.editingPicks = true;
+    state.draftPicks = {};      // cleared so the prefill block sees a fresh slate
+    state.draftTiebreaker = null;
+    renderPicksPage();
+  });
   const list = document.getElementById('submitted-games'); if (!list) return;
   list.innerHTML = games.map(game => {
     const pick = picks.find(p=>p.gameId===game.gameId);
@@ -796,10 +834,11 @@ function submitPicks(week, games) {
   saveAllPicks(newPicks);
   if(state.draftTiebreaker!==null&&!isNaN(state.draftTiebreaker))
     setTiebreakerGuess(week.weekId,session.playerId,state.draftTiebreaker);
-  state.draftPicks={}; state.draftTiebreaker=null;
+  const wasEditing = state.editingPicks;
+  state.draftPicks={}; state.draftTiebreaker=null; state.editingPicks=false;
   showToast(syncBroken
     ? '✅ Picks saved locally. ⚠️ Sync still off — picks not yet shared.'
-    : '✅ Picks submitted! Good luck!','success');
+    : (wasEditing ? '✅ Picks updated!' : '✅ Picks submitted! Good luck!'),'success');
   setTimeout(()=>renderPicksPage(),300);
 }
 
@@ -831,12 +870,23 @@ function renderAlmaMaterWatch(weekId, games) {
     if (game.status===GAME_STATUS.FINAL&&game.homeScore!==null) {
       const myScore  = isHome?game.homeScore:game.awayScore;
       const oppScore = isHome?game.awayScore:game.homeScore;
-      const wl       = myScore>oppScore?'W':'L';
-      scoreStr = ` · <strong class="${myScore>oppScore?'result-win':'result-loss'}">${wl} ${myScore}–${oppScore}</strong>`;
+      // STRAIGHT-UP win/loss only — the alma mater watch tracks whether your
+      // school won the actual game, not whether they covered the spread.
+      // (The picks dashboard handles ATS; this section is just "did my team win?")
+      const won = myScore > oppScore;
+      const tied = myScore === oppScore;
+      const wl = tied ? 'T' : (won ? 'W' : 'L');
+      const cls = tied ? 'alma-result-tie' : (won ? 'alma-result-win' : 'alma-result-loss');
+      scoreStr = ` · <span class="alma-result-pill ${cls}">${wl} ${myScore}–${oppScore}</span>`;
     } else if (game.status===GAME_STATUS.LIVE&&game.homeScore!==null) {
       const myScore  = isHome?game.homeScore:game.awayScore;
       const oppScore = isHome?game.awayScore:game.homeScore;
-      scoreStr = ` · <span class="live-pill"><span class="live-dot"></span>${myScore}–${oppScore}</span>`;
+      // Tentative live indicator — also straight-up (just who's ahead right now).
+      const ahead = myScore > oppScore;
+      const tied = myScore === oppScore;
+      const status = tied ? 'TIED' : (ahead ? 'WINNING' : 'LOSING');
+      const cls = tied ? '' : (ahead ? 'alma-live-ahead' : 'alma-live-behind');
+      scoreStr = ` · <span class="alma-live-pill ${cls}"><span class="live-dot"></span>${status} ${myScore}–${oppScore}</span>`;
     }
 
     return `<div class="alma-watch-row">
@@ -1524,9 +1574,15 @@ function renderLeaderboard() {
               <td class="player-name-cell">${winner?escHtml(winner.displayName):'—'}${winner?.wonByTiebreaker?' (TB)':''}</td>
               <td class="player-name-cell">${loser?escHtml(loser.displayName):'—'}</td>
               <td>
-                ${ob?`<span class="badge ${ob.status==='paid'?'badge-open':ob.status==='waived'?'badge-final':'badge-locked'}">${ob.status}</span>
-                  ${ob.status!=='paid'?`<button class="btn btn-win btn-sm ml-sm mark-paid-standings-btn" data-ob-id="${ob.obligationId}">Mark Paid</button>`:''}
-                `:'<span class="text-muted text-xs">—</span>'}
+                ${ob?(()=>{
+                  const sess = getSession();
+                  // Permission to mark paid: commissioner, OR the player who
+                  // actually owes the obligation (payerPlayerId). Receiving
+                  // players + bystanders can see the status but not change it.
+                  const canMark = sess.isAdmin || sess.playerId === ob.payerPlayerId;
+                  return `<span class="badge ${ob.status==='paid'?'badge-open':ob.status==='waived'?'badge-final':'badge-locked'}">${ob.status}</span>
+                  ${ob.status!=='paid' && canMark ? `<button class="btn btn-win btn-sm ml-sm mark-paid-standings-btn" data-ob-id="${ob.obligationId}">Mark Paid</button>` : ''}`;
+                })():'<span class="text-muted text-xs">—</span>'}
               </td>
             </tr>`;
           }).join('')}
@@ -1538,6 +1594,13 @@ function renderLeaderboard() {
   c.querySelectorAll('.mark-paid-standings-btn').forEach(btn=>{
     btn.addEventListener('click',()=>{
       const ob=getObligations().find(o=>o.obligationId===btn.dataset.obId); if(!ob)return;
+      // Re-check permission server-side — UI hides the button but a sufficiently
+      // motivated person could DOM it in. Reject if neither admin nor payer.
+      const sess = getSession();
+      if (!sess.isAdmin && sess.playerId !== ob.payerPlayerId) {
+        showToast('Only the commissioner or the person who owes can mark this paid','error');
+        return;
+      }
       saveObligation({...ob,status:'paid',paidAt:new Date().toISOString()});
       showToast('Marked paid ✅','success'); renderLeaderboard();
     });
@@ -1596,9 +1659,31 @@ function renderCommPage() {
 
     sections.push(`<div class="section-header"><h2>Commissioner Panel</h2></div>`);
 
+    // Tab bar — groups the 18 admin sections into 5 buckets so the panel
+    // doesn't require infinite scrolling. The active tab is held in
+    // state.commTab; CSS hides any .admin-section whose data-comm-tab
+    // doesn't match the body's data-comm-active attribute.
+    const tabs = [
+      {key:'week',     label:'Week',     icon:'📅'},
+      {key:'games',    label:'Games',    icon:'🏈'},
+      {key:'players',  label:'Players',  icon:'👥'},
+      {key:'settings', label:'Settings', icon:'⚙️'},
+      {key:'data',     label:'Data',     icon:'☁️'},
+    ];
+    sections.push(`
+      <div class="comm-tabbar" role="tablist">
+        ${tabs.map(t => `
+          <button type="button" class="comm-tab${state.commTab===t.key?' active':''}"
+            data-comm-tab-btn="${t.key}" role="tab" aria-selected="${state.commTab===t.key}">
+            <span class="comm-tab-icon">${t.icon}</span>
+            <span class="comm-tab-label">${t.label}</span>
+          </button>
+        `).join('')}
+      </div>`);
+
     // Week Manager
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="week">
         <div class="admin-section-title">📅 Week Manager</div>
         <div class="card">
           <div class="form-group">
@@ -1620,7 +1705,7 @@ function renderCommPage() {
     // Week Settings
     if (week) {
       sections.push(`
-        <div class="admin-section">
+        <div class="admin-section" data-comm-tab="week">
           <div class="admin-section-title">Week Settings — ${escHtml(formatWeekLabel(week))}</div>
           <div class="card">
             ${week.dataSourceMode==='demo'?'<div class="warning-box mb-md">📋 This is the Demo Week with fictional games. Do not use for real picks.</div>':''}
@@ -1685,7 +1770,7 @@ function renderCommPage() {
 
     // ESPN Fetch
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="games">
         <div class="admin-section-title">📡 ESPN Data Fetch</div>
         <div class="card">
           <p class="text-muted text-sm mb-md">Uses the Week start/end dates above. Set them first, then fetch.</p>
@@ -1708,7 +1793,7 @@ function renderCommPage() {
 
     // Data Proof
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="games">
         <div class="admin-section-title">🔍 Data Proof</div>
         <div class="card">${renderDataProofPanel(proof,ps,week,games)}</div>
       </div>`);
@@ -1721,7 +1806,7 @@ function renderCommPage() {
       const recipients = getPlayers().filter(p => p.active && p.email).length;
       const totalActive = getPlayers().filter(p => p.active).length;
       sections.push(`
-        <div class="admin-section">
+        <div class="admin-section" data-comm-tab="week">
           <div class="admin-section-title">📤 Weekly Summary Email</div>
           <div class="card">
             <p class="text-secondary text-sm mb-sm">All games are final — you can send the week's recap to players.</p>
@@ -1741,7 +1826,7 @@ function renderCommPage() {
     // Available Games Pool
     if (availGames.length) {
       sections.push(`
-        <div class="admin-section">
+        <div class="admin-section" data-comm-tab="games">
           <div class="admin-section-title">📋 Available Games (${availGames.length} from ESPN)</div>
           <div class="card mb-sm">
             <div class="flex gap-sm mb-md flex-wrap">
@@ -1759,7 +1844,7 @@ function renderCommPage() {
 
     // Selected Slate
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="games">
         <div class="admin-section-title">🏈 Selected Slate (${games.length}/10 games)</div>
         <div class="flex gap-sm mb-md flex-wrap">
           <button class="btn btn-ghost btn-sm" id="add-manual-game-btn">➕ Add Manually</button>
@@ -1775,7 +1860,7 @@ function renderCommPage() {
 
     // ── EXPORT (expanded — multiple formats and scopes) ──
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="data">
         <div class="admin-section-title">📤 Export Data</div>
         <div class="card">
           <p class="text-muted text-xs mb-md">CSV format opens in Excel / Google Sheets. JSON format preserves full state for backup/restore.</p>
@@ -1808,7 +1893,7 @@ function renderCommPage() {
     // Tiebreaker
     if (week) {
       sections.push(`
-        <div class="admin-section">
+        <div class="admin-section" data-comm-tab="week">
           <div class="admin-section-title">🎯 Tiebreaker</div>
           <div class="card">
             <div class="form-group"><label class="form-label">Question</label>
@@ -1828,7 +1913,7 @@ function renderCommPage() {
 
     // Demo Simulation
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="week">
         <div class="admin-section-title">🎮 Demo Simulation</div>
         <div class="card">
           <p class="text-secondary text-sm mb-md">Simulate scheduled → live → final without real games.</p>
@@ -1881,7 +1966,7 @@ function renderCommPage() {
     // Nicknames
     if (week) {
       sections.push(`
-        <div class="admin-section">
+        <div class="admin-section" data-comm-tab="players">
           <div class="admin-section-title">Weekly Nicknames</div>
           <div class="card">
             ${players.filter(p=>p.active).map(p=>{
@@ -1899,7 +1984,7 @@ function renderCommPage() {
 
     // Players
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="players">
         <div class="admin-section-title">Players, PINs &amp; Contact</div>
         <div class="card">
           <p class="text-muted text-xs mb-md">PINs are hidden by default. Toggle 🙈 to reveal. Save an email per player to share PINs and league updates. Player PINs never appear anywhere outside this panel.</p>
@@ -1960,14 +2045,14 @@ function renderCommPage() {
 
     // Obligations
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="players">
         <div class="admin-section-title">Obligations</div>
         <div class="card">${renderObligationsAdmin()}</div>
       </div>`);
 
     // Auto-refresh
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="settings">
         <div class="admin-section-title">⏱ Auto-Refresh</div>
         <div class="card">
           <div class="form-group">
@@ -1985,7 +2070,7 @@ function renderCommPage() {
 
     // Rules
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="settings">
         <div class="admin-section-title">League Rules</div>
         <div class="card">
           <textarea class="form-textarea" id="rules-editor" style="min-height:180px;font-size:.8rem;font-family:monospace">${getRulesEditorText()}</textarea>
@@ -2012,7 +2097,7 @@ function renderCommPage() {
       return new Date(iso).toLocaleString();
     };
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="data">
         <div class="admin-section-title">☁️ Cloud Sync (Google Sheets)</div>
         <div class="card">
           <p class="text-secondary text-sm mb-sm">
@@ -2073,7 +2158,7 @@ function renderCommPage() {
 
     // ── Security & Settings (password change, site PIN) ──
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="settings">
         <div class="admin-section-title">🔐 Security &amp; Settings</div>
         <div class="card">
           <div class="card-title mb-sm">Commissioner Password</div>
@@ -2107,10 +2192,14 @@ function renderCommPage() {
 
           <div class="divider"></div>
           <div class="card-title mb-sm">Welcome Screen Text</div>
-          <p class="text-muted text-xs mb-sm">Shown above the PIN entry on the front gate. Leave blank to use defaults.</p>
+          <p class="text-muted text-xs mb-sm">Shown above the PIN entry on the front gate. Title renders as two lines (small "welcome to" eyebrow + larger league name).</p>
           <div class="form-group">
-            <label class="form-label">Welcome title</label>
-            <input class="form-input" id="sec-welcome-title" type="text" maxlength="80" placeholder="welcome to irb pick 'ems" value="${escHtml(settings.welcomeTitle||'')}" />
+            <label class="form-label">Title — top line</label>
+            <input class="form-input" id="sec-welcome-title-top" type="text" maxlength="40" placeholder="welcome to" value="${escHtml(settings.welcomeTitleTop||'')}" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Title — main line</label>
+            <input class="form-input" id="sec-welcome-title-main" type="text" maxlength="60" placeholder="irb pick 'ems" value="${escHtml(settings.welcomeTitleMain||'')}" />
           </div>
           <div class="form-group">
             <label class="form-label">Welcome subtitle</label>
@@ -2131,7 +2220,7 @@ function renderCommPage() {
 
     // Data management
     sections.push(`
-      <div class="admin-section">
+      <div class="admin-section" data-comm-tab="data">
         <div class="admin-section-title">⚙️ Data Management</div>
         <div class="card">
           <div class="form-group">
@@ -2150,6 +2239,25 @@ function renderCommPage() {
       </div>`);
 
     c.innerHTML = sections.join('\n');
+    // Tab visibility lives on the panel container as a data attribute so a
+    // single CSS rule handles show/hide for all 18 sections at once.
+    c.setAttribute('data-comm-active', state.commTab);
+    c.querySelectorAll('.comm-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.commTab = btn.dataset.commTabBtn;
+        // Don't re-render the whole panel — just flip the active flag and
+        // re-flag the buttons. Cheaper and avoids losing form-field focus.
+        c.setAttribute('data-comm-active', state.commTab);
+        c.querySelectorAll('.comm-tab').forEach(b => {
+          const active = b.dataset.commTabBtn === state.commTab;
+          b.classList.toggle('active', active);
+          b.setAttribute('aria-selected', active);
+        });
+        // Scroll the panel to the top so users see the first section of the
+        // new tab rather than a mid-scroll fragment.
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+    });
     wireCollapsibleSections(c);
     bindCommEventListeners(week, games, availGames, suggested, settings, allWeeks);
 
@@ -2940,16 +3048,42 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
   document.getElementById('demo-finalize-all')?.addEventListener('click',()=>{
     if(!week)return;
     const wGames=getGames(week.weekId);
+    let promoted = 0, atsComputed = 0, skipped = 0;
     wGames.forEach(g=>{
-      if(g.status!=='final')return;
-      const sv=g.lockedSpread!==null?g.lockedSpread:g.spread;
-      if(sv===null)return;
-      const adj=g.homeScore+sv;
-      const ats=Math.abs(adj-g.awayScore)<0.01?'no_decision':adj>g.awayScore?g.homeTeam:g.awayTeam;
-      saveGame({...g,atsWinner:ats});
+      // Promote anything that has scores but isn't final yet (live OR
+      // scheduled-with-scores). A game without scores can't be finalized —
+      // skip it and let the commissioner know.
+      const hasScores = g.homeScore !== null && g.awayScore !== null;
+      let next = { ...g };
+      if (g.status !== 'final') {
+        if (!hasScores) { skipped++; return; }
+        next.status = 'final';
+        // Compute straight-up winner from scores
+        if (g.homeScore > g.awayScore)       next.actualWinner = g.homeTeam;
+        else if (g.awayScore > g.homeScore)  next.actualWinner = g.awayTeam;
+        else                                  next.actualWinner = null; // tie
+        promoted++;
+      }
+      // Compute ATS (if we have a spread on file)
+      const sv = g.lockedSpread !== null ? g.lockedSpread : g.spread;
+      if (sv !== null) {
+        const adj = next.homeScore + sv;
+        next.atsWinner = Math.abs(adj - next.awayScore) < 0.01
+          ? 'no_decision'
+          : (adj > next.awayScore ? g.homeTeam : g.awayTeam);
+        atsComputed++;
+      }
+      next.dataSource = 'manual';
+      next.lastUpdated = new Date().toISOString();
+      saveGame(next);
     });
     finalizeWeek(week);
-    showToast('✅ Week finalized — check Dashboard for results!','success'); renderCommPage();
+    const parts = [];
+    if (promoted) parts.push(`${promoted} promoted to final`);
+    if (atsComputed) parts.push(`${atsComputed} ATS computed`);
+    if (skipped) parts.push(`${skipped} skipped (no scores)`);
+    showToast(`✅ Week finalized — ${parts.join(' · ') || 'no changes needed'}`,'success');
+    renderCommPage();
   });
   document.getElementById('demo-reset-all-scheduled')?.addEventListener('click',()=>{
     if(!week)return;
@@ -3171,6 +3305,11 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
   document.querySelectorAll('.mark-paid-btn').forEach(btn=>{
     btn.addEventListener('click',()=>{
       const ob=getObligations().find(o=>o.obligationId===btn.dataset.obId); if(!ob)return;
+      const sess = getSession();
+      if (!sess.isAdmin && sess.playerId !== ob.payerPlayerId) {
+        showToast('Only the commissioner or the person who owes can mark this paid','error');
+        return;
+      }
       saveObligation({...ob,status:'paid',paidAt:new Date().toISOString()});
       showToast('Marked paid ✅','success'); renderCommPage();
     });
@@ -3246,9 +3385,11 @@ function bindCommEventListeners(week, games, availGames, suggested, settings, al
 
   // ── Security & Settings: save Welcome Screen text ──
   document.getElementById('sec-save-welcome-btn')?.addEventListener('click', ()=>{
-    const t = (document.getElementById('sec-welcome-title')?.value || '').trim();
+    const top = (document.getElementById('sec-welcome-title-top')?.value || '').trim();
+    const main = (document.getElementById('sec-welcome-title-main')?.value || '').trim();
     const sub = (document.getElementById('sec-welcome-subtitle')?.value || '').trim();
-    saveSetting('welcomeTitle', t);
+    saveSetting('welcomeTitleTop', top);
+    saveSetting('welcomeTitleMain', main);
     saveSetting('welcomeSubtitle', sub);
     showToast('Welcome text saved','success');
   });
@@ -4396,12 +4537,17 @@ function showToast(msg,type='success'){
 
 function showSitePinGate() {
   const s = getSettings();
-  const title    = s.welcomeTitle    || "welcome to irb pick 'ems";
-  const subtitle = s.welcomeSubtitle || 'enter access pin';
+  // Two-part title: a small "welcome to" eyebrow above a larger league name.
+  // Both editable so the commissioner can rename the league without losing the
+  // "welcome to" framing. Empty values fall through to defaults.
+  const titleTop  = s.welcomeTitleTop  || 'welcome to';
+  const titleMain = s.welcomeTitleMain || (s.welcomeTitle ? s.welcomeTitle.replace(/^welcome to\s*/i,'') : "irb pick 'ems");
+  const subtitle  = s.welcomeSubtitle || 'enter access pin';
   document.body.innerHTML = `
     <div class="site-gate">
       <div class="site-gate-inner">
-        <div class="site-gate-title">${escHtml(title)}</div>
+        <div class="site-gate-title-top">${escHtml(titleTop)}</div>
+        <div class="site-gate-title">${escHtml(titleMain)}</div>
         <div class="site-gate-subtitle">${escHtml(subtitle)}</div>
         <input class="site-gate-input" id="site-pin-input" type="password" inputmode="numeric"
           maxlength="8" placeholder="_ _ _ _" autocomplete="off" />
