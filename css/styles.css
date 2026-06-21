@@ -795,3 +795,129 @@ label[for="week-show-history"],label:has(#week-show-history){
 .dc-chip[draggable="true"]{cursor:grab;touch-action:pan-y}     /* allow vertical page scroll, drag is opt-in via long-press */
 .dc-chip[draggable="true"]:active{cursor:grabbing}
 .dc-chip.col-dragging{transform:scale(.95);box-shadow:0 0 0 2px var(--maroon-light)}
+
+/* v15.1 Priority 1: Foolproof spread input — favorite picker + positive margin */
+.spread-input-row{display:grid;grid-template-columns:1fr 110px;gap:8px}
+@media (max-width: 480px) { .spread-input-row{grid-template-columns:1fr} }
+
+/* ── v15.1: Persistent backend-error banner (loud-fail) ────────────────────────
+   Sticks to the top of the viewport whenever cross-device sync is broken so
+   players and the commissioner can SEE that their submissions might not be
+   reaching the league. Dismissable but not auto-hidden. Replaced by a new
+   message in place if multiple errors fire. */
+.backend-error-banner{position:sticky;top:0;left:0;right:0;z-index:200;
+  background:#7c1010;color:#fff;font-family:'Inter',sans-serif;border-bottom:3px solid #4a0808;
+  box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.beb-inner{max-width:var(--max-width);margin:0 auto;display:flex;align-items:flex-start;gap:10px;
+  padding:10px 14px}
+.beb-icon{font-size:1.3rem;line-height:1;flex-shrink:0;margin-top:1px}
+.beb-text{flex:1;min-width:0;font-size:.82rem;line-height:1.4}
+.beb-text strong{display:block;font-size:.88rem;letter-spacing:.02em}
+.beb-detail{font-family:'Courier New',monospace;font-size:.72rem;opacity:.92;margin-top:2px;word-break:break-word}
+.beb-hint{margin-top:3px;font-size:.74rem;opacity:.92}
+.beb-retry, .beb-close{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.35);
+  padding:5px 11px;border-radius:6px;cursor:pointer;font-size:.74rem;font-family:'Oswald',sans-serif;
+  font-weight:600;letter-spacing:.04em;flex-shrink:0;align-self:flex-start}
+.beb-retry:hover, .beb-close:hover{background:rgba(255,255,255,.28)}
+.beb-close{padding:5px 9px}
+@media (max-width:480px){
+  .beb-inner{flex-wrap:wrap;padding:9px 12px;gap:8px}
+  .beb-retry, .beb-close{font-size:.68rem;padding:4px 8px}
+}
+
+/* ── v15.1 Priority 2: Stark final colors that override alternating rows ──
+   The earlier pale tints (--win-bg / --loss-bg) made FINAL cells look
+   indistinguishable from "no pick yet" at a glance. Now FINAL cells get a
+   saturated solid fill with white text — unmistakable.
+
+   We also need to override the alternating-row grey from
+   `.dashboard-table tr:nth-child(even) td` (same specificity as
+   `.pick-cell.result-win`), which can otherwise win the cascade in even rows
+   and leave a final cell looking grey. `!important` here is appropriate
+   because the result colors carry critical semantic meaning that should NOT
+   be overridden by visual zebra-striping. */
+.pick-cell.result-win {
+  background: var(--win) !important;
+  color: #fff !important;
+  font-weight: 700;
+}
+.pick-cell.result-loss {
+  background: var(--loss) !important;
+  color: #fff !important;
+  font-weight: 700;
+}
+/* Icons (✓/✗) inside the cell go white to read against the saturated fill */
+.pick-cell.result-win .pick-icon,
+.pick-cell.result-loss .pick-icon { color: #fff !important; }
+
+/* Compact view: bold final colors on the chips themselves, same override */
+.dc-chip-win  { background: var(--win)  !important; color: #fff !important; border-color: var(--win)  !important; }
+.dc-chip-loss { background: var(--loss) !important; color: #fff !important; border-color: var(--loss) !important; }
+.dc-chip-win  .dc-chip-init { background: rgba(255,255,255,.25) !important; color: #fff !important; }
+.dc-chip-loss .dc-chip-init { background: rgba(255,255,255,.25) !important; color: #fff !important; }
+
+/* Live cells (pulsing tints) and no-decision keep the muted palette so the
+   visual hierarchy remains: grey/neutral = scheduled, pulsing tint = live,
+   solid bold = final-decided. No changes needed there. */
+
+/* ── v15.1 Priority 3B: Bigger emoji picker, grid layout, mobile-friendly ──
+   The old picker was a wrapping flex row with 1.1rem fonts at 4×6 padding,
+   making each tap target effectively ~22×22 — way too small on phones.
+   New design: a true CSS grid with min 40px cells, generous gap, more cells
+   per row on wider viewports so the grid stays roughly square (3 rows max).
+   Overrides earlier flex-based rules below. */
+.reaction-picker {
+  display: grid !important;
+  grid-template-columns: repeat(5, 44px);    /* 5 columns × 3 rows for 15 emojis */
+  gap: 6px;
+  padding: 8px;
+  max-width: none !important;
+  max-height: none !important;
+  overflow: visible !important;
+  /* Drop above when the strip is near the bottom of the viewport; default
+     stays below the "+" button. The simple fallback works for most cases —
+     for truly cramped layouts we let it scroll its parent. */
+}
+.reaction-pick-option {
+  width: 44px;
+  height: 44px;
+  font-size: 1.55rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  line-height: 1;
+}
+.reaction-pick-option:active { transform: scale(.92); }
+
+@media (max-width: 480px) {
+  .reaction-picker {
+    /* Wider phones (≥360px) fit 7 columns × 3 rows neatly inside ~330px.
+       This breakpoint inherits the grid above and just bumps column count. */
+    grid-template-columns: repeat(7, 42px);
+    gap: 5px;
+    padding: 9px;
+  }
+  .reaction-pick-option { width: 42px; height: 42px; font-size: 1.55rem; }
+}
+@media (max-width: 360px) {
+  .reaction-picker { grid-template-columns: repeat(5, 42px); }
+}
+
+/* ── v15.1 Priority 4: Always-visible kickoff time + state pill ──
+   The kickoff date+time now appears on every row regardless of status. A
+   small saturated pill is appended when the game is LIVE or FINAL so users
+   can see at a glance: "Sat 9/7 3:30 PM ET · FINAL 35-28". */
+.kickoff-time { font-size: .68rem; color: var(--text-muted); letter-spacing: .02em; }
+.status-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 7px; margin-left: 6px;
+  font-family: 'Oswald', sans-serif; font-weight: 600; font-size: .64rem;
+  letter-spacing: .04em; border-radius: 10px; line-height: 1.5;
+}
+.status-pill-final {
+  background: var(--win); color: #fff;
+  /* "FINAL" pill uses the same saturated green as the result cells so the
+     two visual languages stay consistent. */
+}

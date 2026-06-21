@@ -45,6 +45,39 @@ export function getSyncStatus() {
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
+
+/**
+ * Load deployed config from `config.json` next to the published site.
+ * This is the "Option A" auto-connect path — the commissioner sets the URL +
+ * token ONCE in config.json before deploying, and every device that opens
+ * the site picks it up automatically. No per-device setup, no Commissioner
+ * panel visit, no token sharing.
+ *
+ * Returns:
+ *   { ok: true,  url, token }              — config.json exists, has values
+ *   { ok: false, reason: 'missing' }       — file 404 or fetch failed
+ *   { ok: false, reason: 'empty' }         — file exists but values blank
+ *   { ok: false, reason: 'malformed', error } — file exists but invalid JSON
+ *
+ * The caller (boot in app.js) decides what to do with each outcome — typically
+ * 'empty' or 'missing' → silent fall back to local mode (a fork-friendly
+ * default), while real connection errors get surfaced loudly to the user.
+ */
+export async function loadDeployedConfig() {
+  try {
+    // Cache-bust on every load so a fresh deploy is picked up immediately
+    const res = await fetch('config.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return { ok: false, reason: 'missing' };
+    const data = await res.json();
+    const url = (data?.backendUrl || '').trim();
+    const token = (data?.backendToken || '').trim();
+    if (!url || !token) return { ok: false, reason: 'empty' };
+    return { ok: true, url, token };
+  } catch (err) {
+    return { ok: false, reason: 'malformed', error: String(err.message || err) };
+  }
+}
+
 export function getBackendConfig() {
   if (_config) return _config;
   try { _config = JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); }

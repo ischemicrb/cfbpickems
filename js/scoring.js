@@ -7,10 +7,16 @@ import { PICK_RESULT, GAME_STATUS, getAlmaMaterMatch } from './data-model.js';
 import { getTiebreakerGuess } from './storage.js';
 
 export function calculateAtsWinner(game) {
-  const { homeScore, awayScore, lockedSpread, homeTeam, awayTeam, status } = game;
+  const { homeScore, awayScore, lockedSpread, spread, homeTeam, awayTeam, status } = game;
   if (status !== GAME_STATUS.FINAL) return null;
-  if (homeScore===null||awayScore===null||lockedSpread===null) return null;
-  const adjusted = homeScore + lockedSpread;
+  if (homeScore===null||awayScore===null) return null;
+  // Prefer lockedSpread (the spread the week was scored against) but fall back
+  // to live spread when nothing was locked — otherwise final games with scores
+  // but never-locked weeks show as PENDING forever. The spread convention is
+  // HOME perspective: negative = home favored, positive = away favored.
+  const sv = lockedSpread !== null && lockedSpread !== undefined ? lockedSpread : spread;
+  if (sv === null || sv === undefined) return null;
+  const adjusted = homeScore + sv;
   const diff = adjusted - awayScore;
   if (Math.abs(diff) < 0.01) return 'no_decision';
   return diff > 0 ? homeTeam : awayTeam;

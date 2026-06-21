@@ -4,8 +4,8 @@
  * One-stop place to update the user-visible version string + release date.
  * Surfaced in the footer of the Rules tab (Priority 12).
  */
-export const APP_VERSION = 'v0.15';
-export const APP_VERSION_DATE = '2026-05-31';
+export const APP_VERSION = 'v0.15.1';
+export const APP_VERSION_DATE = '2026-06-01';
 
 
 import {
@@ -70,7 +70,7 @@ import {
   isBackendConfigured, isBackendReady, pingBackend,
   hydrate as hydrateBackend, seedFromLocal, flushPush,
   refreshFromBackend, createSnapshot, listSnapshots, restoreSnapshot,
-  onBackendStatus, getSyncStatus,
+  onBackendStatus, getSyncStatus, loadDeployedConfig,
 } from './backend.js';
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
@@ -95,33 +95,62 @@ const state = {
 document.addEventListener('DOMContentLoaded', () => { boot(); });
 
 async function boot() {
-  // If a shared backend (Google Sheets) is configured, try to use it.
-  // On any failure we fall back to local mode so the app always works.
+  // Auto-connect path (Option A): read config.json baked into the deployed
+  // site. When the commissioner has set backendUrl + backendToken there, EVERY
+  // device that opens the site auto-connects — players never see a config UI.
+  // We still respect a manually-entered localStorage config (legacy path) so
+  // existing devices that did per-device setup keep working.
+  let backendErrorBanner = null;
+  const deployed = await loadDeployedConfig();
+  if (deployed.ok) {
+    // Always write into localStorage so the rest of the app's plumbing
+    // (Cloud Sync panel, beforeunload flushPush, etc.) sees a real config.
+    setBackendConfig(deployed.url, deployed.token);
+  }
+
   if (isBackendConfigured()) {
     try {
-      refreshHeader(); // show something while we connect
-      await hydrateBackend();        // pull shared snapshot into the in-memory mirror
-      setBackendMode('googleSheets');// route storage.js reads/writes to the mirror
-      ensureSeedData();              // seed defaults only if the Sheet was empty
-      showToast('☁️ Connected to shared league data', 'success');
+      refreshHeader();
+      await hydrateBackend();
+      setBackendMode('googleSheets');
+      ensureSeedData();
+      // Silent on success — toast would be noise on every reload
     } catch (err) {
-      console.warn('[backend] hydrate failed, using local mode:', err);
+      // LOUD failure: per user requirement, players + commissioner must KNOW
+      // their picks aren't syncing. We do continue with local mode so the app
+      // still works, but a persistent red banner stays up until the connection
+      // is restored or the user explicitly dismisses it, and every save shows
+      // a yellow warning toast.
+      const msg = String(err.message || err);
+      console.error('[backend] hydrate failed:', err);
       setBackendMode('local');
       initStorage();
-      showToast('⚠️ Could not reach shared data — using this device only', 'warning');
+      backendErrorBanner = msg;
     }
+  } else if (deployed.ok === false && deployed.reason === 'malformed') {
+    // config.json exists but is broken — this is unambiguously an error worth
+    // surfacing (fork-friendly silence only applies to missing/empty configs).
+    console.error('[backend] config.json malformed:', deployed.error);
+    setBackendMode('local');
+    initStorage();
+    backendErrorBanner = `config.json is invalid (${deployed.error}). Cross-device sync is OFF.`;
   } else {
+    // No config provided — silent local-only mode (fork-friendly default).
     setBackendMode('local');
     initStorage();
   }
 
   // Reflect background sync status in the header
-  onBackendStatus((status) => updateSyncBadge(status));
+  onBackendStatus((status, detail) => {
+    updateSyncBadge(status);
+    // Late sync errors (after boot) also surface as the persistent banner
+    // so the commissioner can see something went wrong after, say, a token
+    // rotation or a Google Apps Script quota hit.
+    if (status === 'error' && detail?.error) showBackendErrorBanner(detail.error);
+    if (status === 'synced') hideBackendErrorBanner();
+  });
 
   setupNav(); refreshHeader(); renderTzToggle(); renderThemeToggle(); applyTheme(getTheme()); setupAutoRefresh();
-  // First-run mobile default: if no preference saved AND viewport is phone-sized,
-  // start in compact view so the All-Picks-by-Game matrix doesn't overflow.
-  // Desktop stays standard. User can flip anytime.
   if (!getSettings().dashboardLayout && typeof window !== 'undefined' && window.innerWidth && window.innerWidth < 600) {
     saveSetting('dashboardLayout', 'compact');
   }
@@ -129,8 +158,62 @@ async function boot() {
   navigateTo('dashboard');
   revealApp();
 
-  // Best-effort flush of any queued writes before the tab closes.
+  // Show the persistent error banner AFTER reveal so it appears over the
+  // first rendered screen rather than the boot-time hidden body.
+  if (backendErrorBanner) showBackendErrorBanner(backendErrorBanner);
+
   window.addEventListener('beforeunload', () => { try { flushPush(); } catch {} });
+}
+
+/**
+ * Persistent red banner shown when the shared-data backend isn't reachable.
+ * Sticks to the top of the viewport until either the connection recovers
+ * (handled by the onBackendStatus 'synced' event in boot) or the user
+ * dismisses it. Idempotent — calling it twice with the same message is a
+ * no-op (we update the message in place rather than stacking banners).
+ */
+function showBackendErrorBanner(message) {
+  let el = document.getElementById('backend-error-banner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'backend-error-banner';
+    el.className = 'backend-error-banner';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `
+    <div class="beb-inner">
+      <span class="beb-icon" aria-hidden="true">⚠️</span>
+      <div class="beb-text">
+        <strong>Cross-device sync is OFF on this device.</strong>
+        <div class="beb-detail">${escHtml(String(message))}</div>
+        <div class="beb-hint">Picks made on THIS device may NOT reach other players' devices until this is fixed. Tell the commissioner.</div>
+      </div>
+      <button type="button" class="beb-retry" id="beb-retry-btn">Retry</button>
+      <button type="button" class="beb-close" id="beb-close-btn" aria-label="Dismiss">✕</button>
+    </div>`;
+  el.style.display = 'block';
+  document.getElementById('beb-retry-btn')?.addEventListener('click', async () => {
+    if (!isBackendConfigured()) {
+      showToast('No backend URL configured on this device','error');
+      return;
+    }
+    showToast('⏳ Retrying connection…','warning');
+    try {
+      await hydrateBackend();
+      setBackendMode('googleSheets');
+      hideBackendErrorBanner();
+      showToast('✅ Connection restored','success');
+    } catch (err) {
+      showToast(`❌ Still failing: ${err.message||err}`,'error');
+      showBackendErrorBanner(String(err.message || err));
+    }
+  });
+  document.getElementById('beb-close-btn')?.addEventListener('click', () => { el.style.display = 'none'; });
+}
+
+function hideBackendErrorBanner() {
+  const el = document.getElementById('backend-error-banner');
+  if (el) el.style.display = 'none';
 }
 
 /** Remove the boot-time visibility lock once the first screen has rendered.
@@ -688,6 +771,21 @@ function submitPicks(week, games) {
   if(!session.playerId||!session.playerVerified)return;
   const{allowed,reason}=canPlayerSubmitPicks(week,session.playerId);
   if(!allowed){showToast(`🔒 ${reason}`,'error');return;}
+  // If the shared backend is configured but failing, warn loudly BEFORE
+  // accepting the submit. We don't block — the player needs to be able to
+  // submit even offline — but they must explicitly acknowledge their picks
+  // may not reach the league until sync recovers.
+  const banner = document.getElementById('backend-error-banner');
+  const syncBroken = isBackendConfigured() && banner && banner.style.display !== 'none';
+  if (syncBroken) {
+    const ok = confirm(
+      '⚠️ Cross-device sync is currently OFF.\n\n' +
+      'Your picks will be saved on THIS device but may not reach other ' +
+      'players or the commissioner until the connection is restored.\n\n' +
+      'Submit anyway?'
+    );
+    if (!ok) return;
+  }
   const newPicks=games.map(game=>{
     const sel=state.draftPicks[game.gameId];
     if(!sel||!isGamePickable(game))return null;
@@ -699,7 +797,9 @@ function submitPicks(week, games) {
   if(state.draftTiebreaker!==null&&!isNaN(state.draftTiebreaker))
     setTiebreakerGuess(week.weekId,session.playerId,state.draftTiebreaker);
   state.draftPicks={}; state.draftTiebreaker=null;
-  showToast('✅ Picks submitted! Good luck!','success');
+  showToast(syncBroken
+    ? '✅ Picks saved locally. ⚠️ Sync still off — picks not yet shared.'
+    : '✅ Picks submitted! Good luck!','success');
   setTimeout(()=>renderPicksPage(),300);
 }
 
@@ -1087,13 +1187,18 @@ function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actual
     const ats=game.status===GAME_STATUS.FINAL?(game.atsWinner??calculateAtsWinner(game)):null;
     const atsLabel=ats==='no_decision'?'No Decision':ats||'';
 
-    let statusInfo;
-    if(game.status===GAME_STATUS.FINAL&&game.homeScore!==null)
-      statusInfo=`<span style="font-size:.7rem;color:var(--text-muted)">FINAL ${game.homeScore}–${game.awayScore}</span>`;
-    else if(game.status===GAME_STATUS.LIVE&&game.homeScore!==null)
-      statusInfo=`<span class="live-pill" style="font-size:.66rem"><span class="live-dot"></span>LIVE ${game.homeScore}–${game.awayScore}</span>`;
-    else
-      statusInfo=`<span style="font-size:.7rem;color:var(--text-muted)">${fmtTime(game.kickoff,game)}</span>`;
+    // Priority 4: always show kickoff date+time, with a small state indicator
+    // (LIVE pill / FINAL pill) appended when the game has progressed. Old code
+    // showed *only* the score when live/final and hid the kickoff entirely —
+    // users couldn't tell at a glance when a final game had actually kicked off.
+    const kickoffStr = fmtTime(game.kickoff, game);
+    let stateIndicator = '';
+    if (game.status === GAME_STATUS.FINAL && game.homeScore !== null) {
+      stateIndicator = `<span class="status-pill status-pill-final">FINAL ${game.homeScore}–${game.awayScore}</span>`;
+    } else if (game.status === GAME_STATUS.LIVE && game.homeScore !== null) {
+      stateIndicator = `<span class="live-pill" style="font-size:.66rem"><span class="live-dot"></span>LIVE ${game.homeScore}–${game.awayScore}</span>`;
+    }
+    const statusInfo = `<span class="kickoff-time">${escHtml(kickoffStr)}</span>${stateIndicator}`;
 
     const pickCells=submitted.map(player=>{
       const pick=allPicks.find(pk=>pk.gameId===game.gameId&&pk.playerId===player.playerId);
@@ -1154,7 +1259,7 @@ function renderDashboardTable(players,games,allPicks,weeklyResults,weekId,actual
 // hit without scrolling on mobile. The picker UI wraps when the palette is
 // wider than the popover, so adding more is safe.
 const REACTION_PALETTE = [
-  '👍','👎','🔥','😂','😁','😭','😬','🤡',
+  '👍','👎','🔥','😂','😁','😭','😅','😬','🤡',
   '🫡','🤘','🤙','☝️','🚀','🖕',
 ];
 
@@ -1307,14 +1412,16 @@ function renderDashboardCompact(players, games, allPicks, weeklyResults, weekId,
   const gameCards = sortedGames.map(game => {
     const sv = game.lockedSpread !== null ? game.lockedSpread : game.spread;
     const spreadStr = sv !== null ? fmtSpread(sv, game.favorite, game) : (game.status === GAME_STATUS.FINAL ? 'Final' : 'TBD');
-    let statusInfo;
+    // Priority 4: kickoff time + state indicator, same pattern as the matrix
+    // so users see one consistent format across both views.
+    const kickoffStr = fmtTime(game.kickoff, game);
+    let stateIndicator = '';
     if (game.status === GAME_STATUS.FINAL && game.homeScore !== null) {
-      statusInfo = `<span class="dc-status dc-final">FINAL ${game.homeScore}–${game.awayScore}</span>`;
+      stateIndicator = `<span class="dc-status dc-final">FINAL ${game.homeScore}–${game.awayScore}</span>`;
     } else if (game.status === GAME_STATUS.LIVE && game.homeScore !== null) {
-      statusInfo = `<span class="dc-status dc-live"><span class="live-dot"></span>${game.homeScore}–${game.awayScore}</span>`;
-    } else {
-      statusInfo = `<span class="dc-status dc-scheduled">${fmtTime(game.kickoff, game)}</span>`;
+      stateIndicator = `<span class="dc-status dc-live"><span class="live-dot"></span>${game.homeScore}–${game.awayScore}</span>`;
     }
+    const statusInfo = `<span class="dc-status dc-scheduled">${escHtml(kickoffStr)}</span>${stateIndicator}`;
 
     const chips = submitted.map(player => {
       const pick = picks.find(pk => pk.gameId === game.gameId && pk.playerId === player.playerId);
@@ -3503,6 +3610,17 @@ function showCreateWeekModal() {
 
 function showGameModal(game, week, onSave) {
   const ov=document.createElement('div');ov.className='modal-overlay centered';
+  // Derive initial favorite/margin from any existing signed spread so editing
+  // an existing game prefills correctly. Convention: home-perspective signed.
+  let initFav = game?.favorite || '';
+  let initMargin = '';
+  if (game?.spread !== null && game?.spread !== undefined) {
+    initMargin = Math.abs(game.spread);
+    if (!initFav) {
+      if (game.spread < 0) initFav = game.homeTeam || '';
+      else if (game.spread > 0) initFav = game.awayTeam || '';
+    }
+  }
   ov.innerHTML=`<div class="modal">
     <div class="modal-header"><h3>${game?'Edit Game':'Add Game'}</h3><button class="modal-close" id="mc">✕</button></div>
     <div class="flex gap-sm">
@@ -3516,10 +3634,22 @@ function showGameModal(game, week, onSave) {
     <p class="text-muted text-xs mb-md">Display will be "School (Mascot)" — leave Mascot blank to use the auto lookup.</p>
     <div class="form-group"><label class="form-label">Kickoff (local time)</label>
       <input class="form-input" id="m-kickoff" type="datetime-local" value="${game?.kickoff?new Date(game.kickoff).toISOString().slice(0,16):''}" /></div>
-    <div class="form-group"><label class="form-label">Spread (home perspective: -7 = home favored by 7)</label>
-      <input class="form-input" id="m-spread" type="number" step="0.5" value="${game?.spread??''}" placeholder="-7.5" />
-      <p class="text-muted text-xs mt-sm">Negative = home favored. Positive = away favored. Leave blank if unknown.</p></div>
-    <div class="form-group"><label class="form-label">Favorite Team <span class="text-muted text-xs">(optional — auto-derived from spread sign if blank)</span></label><input class="form-input" id="m-fav" value="${escHtml(game?.favorite||'')}" /></div>
+
+    <!-- Foolproof spread input: pick favorite, enter positive margin. We compute
+         the signed home-perspective spread on save so a sign error becomes
+         impossible (Priority 1: spread bug audit). -->
+    <div class="form-group"><label class="form-label">Spread</label>
+      <div class="spread-input-row">
+        <select class="form-select" id="m-spread-fav">
+          <option value="">— Favorite —</option>
+          <option value="home"${initFav===game?.homeTeam?' selected':''}>Home favored</option>
+          <option value="away"${initFav===game?.awayTeam?' selected':''}>Away favored</option>
+          <option value="pk"${game?.spread===0?' selected':''}>Pick'em (PK)</option>
+        </select>
+        <input class="form-input" id="m-spread-margin" type="number" step="0.5" min="0" placeholder="margin (positive)" value="${initMargin}" />
+      </div>
+      <p class="text-muted text-xs mt-sm">Pick which team is favored and enter the spread as a positive number. e.g. Virginia -3 → "Home favored" (if Virginia is home) and Margin "3".</p>
+    </div>
     <div class="form-group"><label class="form-label">Venue (optional)</label><input class="form-input" id="m-venue" value="${escHtml(game?.venue||'')}" /></div>
     <div class="form-group"><label class="form-label">Home Conference</label><input class="form-input" id="m-hconf" value="${escHtml(game?.homeConference||'')}" /></div>
     <div class="form-group"><label class="form-label">Away Conference</label><input class="form-input" id="m-aconf" value="${escHtml(game?.awayConference||'')}" /></div>
@@ -3546,35 +3676,46 @@ function showGameModal(game, week, onSave) {
     const aMasc=document.getElementById('m-away-mascot')?.value.trim()||'';
     const kr=document.getElementById('m-kickoff')?.value;
     const kickoff=kr?new Date(kr).toISOString():null;
-    // Soft guard: warn (not block) when no date — game will show as "pending" to players.
     if(!kickoff && !game){
       if(!confirm('No kickoff date/time is set. This game will be hidden from players and shown as "pending confirmation" until you set a date. Add it anyway?')) return;
     }
-    const sr=document.getElementById('m-spread')?.value;
-    const spread=sr!==''&&sr!==undefined?parseFloat(sr):null;
-    let fav=document.getElementById('m-fav')?.value.trim()||null;
-    // Auto-derive favorite from spread sign if not provided
-    if(!fav && spread!==null){
-      if(spread<0) fav=ht;
-      else if(spread>0) fav=at;
-    }
+    // Convert favorite+margin to signed home-perspective spread.
+    // Convention: NEGATIVE = home favored, POSITIVE = away favored, 0 = PK.
+    const favPick = document.getElementById('m-spread-fav')?.value || '';
+    const marginRaw = document.getElementById('m-spread-margin')?.value;
+    const marginVal = marginRaw !== '' && marginRaw !== undefined ? Math.abs(parseFloat(marginRaw)) : null;
+    let spread = null, fav = null;
+    if (favPick === 'pk') { spread = 0; fav = null; }
+    else if (favPick === 'home' && marginVal !== null && !isNaN(marginVal)) { spread = -marginVal; fav = ht; }
+    else if (favPick === 'away' && marginVal !== null && !isNaN(marginVal)) { spread = marginVal; fav = at; }
+    // else leave spread/fav null (TBD)
     const venue=document.getElementById('m-venue')?.value.trim()||null;
     const hconf=document.getElementById('m-hconf')?.value.trim()||'';
     const aconf=document.getElementById('m-aconf')?.value.trim()||'';
     const hr=parseInt(document.getElementById('m-hrank')?.value)||null;
     const ar=parseInt(document.getElementById('m-arank')?.value)||null;
-    const hs=game?parseFloat(document.getElementById('m-hs')?.value)||null:null;
-    const as_=game?parseFloat(document.getElementById('m-as')?.value)||null:null;
+    const hs=game?(document.getElementById('m-hs')?.value!==''?parseFloat(document.getElementById('m-hs')?.value):null):null;
+    const as_=game?(document.getElementById('m-as')?.value!==''?parseFloat(document.getElementById('m-as')?.value):null):null;
     const status=game?document.getElementById('m-status')?.value||'scheduled':'scheduled';
-    // Precise alma mater detection (avoids Arkansas State / Arkansas confusion)
     const isAlma=!!(getAlmaMaterMatch(ht) || getAlmaMaterMatch(at));
     const tw=getTimeWindow(kickoff);
     let actualWinner=null;
     if(status==='final'&&hs!==null&&as_!==null){if(hs>as_)actualWinner=ht;else if(as_>hs)actualWinner=at;}
+    // Recompute atsWinner whenever editing a final score so we don't carry
+    // stale data from a previous calculation. Uses the spread we just set.
+    let atsWinner = game?.atsWinner ?? null;
+    if (status === 'final' && hs !== null && as_ !== null && spread !== null) {
+      const adj = hs + spread;
+      const diff = adj - as_;
+      if (Math.abs(diff) < 0.01) atsWinner = 'no_decision';
+      else atsWinner = diff > 0 ? ht : at;
+    } else if (status !== 'final') {
+      atsWinner = null;
+    }
     onSave({homeTeam:ht,awayTeam:at,homeMascot:hMasc,awayMascot:aMasc,
       kickoff,spread,favorite:fav,venue,
       homeConference:hconf,awayConference:aconf,homeRank:hr,awayRank:ar,
-      homeScore:hs,awayScore:as_,status,actualWinner,isAlmaMaterGame:isAlma,
+      homeScore:hs,awayScore:as_,status,actualWinner,atsWinner,isAlmaMaterGame:isAlma,
       timeWindow:tw,spreadSource:'manual',dataQuality:'manual',dataSource:'manual',
       kickoffConfirmed:!!kickoff,
       lastUpdated:new Date().toISOString()});
