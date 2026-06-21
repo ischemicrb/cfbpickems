@@ -1,5 +1,5 @@
 {
   "_comment": "Cross-device data sync config. Fill these in BEFORE deploying. Empty values = local-only mode. See CROSS_DEVICE_SETUP.md for one-time setup of the Google Sheet + Apps Script. Once set here, every device that opens the published site auto-connects — no player needs to enter anything.",
-  "backendUrl": "",
-  "backendToken": ""
+  "backendUrl": "https://script.google.com/macros/s/AKfycbwfdxbt-RgaqhXeM3rmeLUMYOCFM_cV5UWsUevQCvdUnPlt7vra4C5g2trbYOSJXQP1lA/exec",
+  "backendToken": "f36fe8394e1b4d8183bedec406288671e608f460"
 }
